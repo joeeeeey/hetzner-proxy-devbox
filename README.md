@@ -136,23 +136,41 @@ Run this after bootstrap:
 verify-global-proxy
 ```
 
-`verify-global-proxy` is kept as the compatibility command from the original
+`verify-global-proxy` is the strict compatibility command from the original
 runbook. It points to the same verifier as:
 
 ```bash
 verify-transparent-proxy
 ```
 
-It checks:
+Any failed required check exits non-zero. It checks:
 
 - `sing-box.service` is active
-- observed IPv4 egress equals `proxy_expected_egress_ip`
-- Cloudflare trace IP equals `proxy_expected_egress_ip`
-- DNS resolves through the configured sing-box DNS path
+- `sing-box.service` is enabled and not failed
+- `ssh-mgmt-bypass.service` is active and enabled
+- `verify-transparent-proxy.timer` is active and enabled
+- `sing-box check -c /etc/sing-box/config.json` passes
+- proxy host resolves and matches the rendered sing-box outbound
+- direct proxy endpoint egress equals `proxy_expected_egress_ip`
+- multiple transparent egress sources equal `proxy_expected_egress_ip`
+- DNS resolves and the DNS proxy path is confirmed from sing-box logs
+- rendered sing-box config has strict TUN, DNS hijack, SSH bypass, and proxy-IP bypass
 - policy route table `2022` sends default traffic to `singtun0`
+- `ip rule` references table `2022`
+- TUN interface exists
 - sing-box nftables redirect and DNS hijack rules exist
-- SSH TCP/22 ingress and reply traffic bypass the TUN/proxy path
-- UDP proxying when `proxy_allow_udp=true`
+- SSH TCP/22 ingress and reply traffic bypass the TUN/proxy path in config and nftables
+- UDP proxying is strictly checked when `proxy_allow_udp=true`
+
+For manual debugging where you want a full status report without a failing exit
+code:
+
+```bash
+verify-global-proxy --no-fail
+```
+
+The command still prints every `PASS` and `FAIL`; `--no-fail` only changes the
+final exit code.
 
 For DNS-specific validation:
 

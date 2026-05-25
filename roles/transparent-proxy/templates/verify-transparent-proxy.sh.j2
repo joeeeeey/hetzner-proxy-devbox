@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exec sudo "$0" "$@"
 fi
 
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
 env_file="{{ proxy_env_path }}"
 expected_ip=""
+dns_name="example.com"
 udp_host="1.1.1.1"
 udp_port="12345"
-dns_name="example.com"
+strict_udp="auto"
+fail_on_error=1
+
+passed=0
+failed=0
+declare -a failures=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  sudo verify-transparent-proxy [--expected-ip <ip>] [--dns-name <domain>] [--udp-host <ip>] [--udp-port <port>]
+  sudo verify-global-proxy [--expected-ip <ip>] [--dns-name <domain>] [--udp-host <ip>] [--udp-port <port>] [--strict-udp|--no-strict-udp] [--no-fail]
+
+This is a strict transparent proxy verifier:
+- it prints every PASS/FAIL it can check
+- it exits 1 at the end if any required check failed
+- --no-fail keeps the exit code 0 for interactive debugging
 EOF
 }
 
@@ -24,111 +38,295 @@ while [[ $# -gt 0 ]]; do
     --dns-name) dns_name="${2:-}"; shift 2 ;;
     --udp-host) udp_host="${2:-}"; shift 2 ;;
     --udp-port) udp_port="${2:-}"; shift 2 ;;
+    --strict-udp) strict_udp="yes"; shift ;;
+    --no-strict-udp) strict_udp="no"; shift ;;
+    --no-fail) fail_on_error=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
+record_pass() {
+  passed=$((passed + 1))
+  echo "PASS: $*"
+}
+
+record_fail() {
+  failed=$((failed + 1))
+  failures+=("$*")
+  echo "FAIL: $*" >&2
+}
+
+run_check() {
+  local label="$1"
+  shift
+  if "$@"; then
+    record_pass "$label"
+  else
+    record_fail "$label"
+  fi
+}
+
+require_or_note() {
+  local missing=0
+  local cmd
+  for cmd in "$@"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      record_fail "Missing command: $cmd"
+      missing=1
+    fi
+  done
+  return "$missing"
+}
+
+curl_ip() {
+  curl -4 -fsS --connect-timeout 5 --max-time 15 --retry 2 --retry-delay 1 "$@" | tr -d '\r\n'
+}
+
+finish() {
+  echo
+  echo "Strict verification summary:"
+  echo "  Passed checks: $passed"
+  echo "  Failed checks: $failed"
+  echo "  Expected proxy egress IP: ${expected_ip:-unset}"
+  echo "  Direct proxy endpoint IP: ${direct_proxy_ip:-unchecked}"
+  echo "  Transparent egress IPs: ${egress_ip_icanhazip:-unchecked}, ${egress_ip_ifconfig:-unchecked}, ${trace_ip:-unchecked}"
+  echo "  Proxy mode: ${proxy_mode:-unset}"
+  echo "  DNS name checked: $dns_name"
+  echo "  TUN interface: ${tun_if:-unset}"
+
+  if [[ "$failed" -gt 0 ]]; then
+    echo
+    echo "Failures:"
+    printf '  - %s\n' "${failures[@]}"
+    if [[ "$fail_on_error" -eq 1 ]]; then
+      exit 1
+    fi
+  fi
+
+  exit 0
+}
+
+require_or_note curl dig ip jq nft systemctl journalctl awk grep sed tr sing-box || finish
+
 if [[ ! -r "$env_file" ]]; then
-  echo "Cannot read env file: $env_file" >&2
-  exit 1
+  record_fail "Cannot read env file: $env_file"
+  finish
 fi
 
-set -a
-source "$env_file"
-set +a
+load_env_file "$env_file"
+
+for required_var in PROXY_MODE PROXY_HOST PROXY_PORT PROXY_USERNAME PROXY_PASSWORD; do
+  if [[ -z "${!required_var:-}" ]]; then
+    record_fail "$required_var is required in $env_file"
+  fi
+done
 
 expected_ip="${expected_ip:-${PROXY_EXPECTED_EGRESS_IP:-}}"
-proxy_mode="$(printf '%s' "${PROXY_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+[[ -n "$expected_ip" ]] || record_fail "Expected IP is empty. Pass --expected-ip or set PROXY_EXPECTED_EGRESS_IP in $env_file"
+[[ "${PROXY_PORT:-}" =~ ^[0-9]+$ ]] || record_fail "PROXY_PORT must be numeric: ${PROXY_PORT:-unset}"
+[[ "$udp_port" =~ ^[0-9]+$ ]] || record_fail "UDP port must be numeric: $udp_port"
+
+if [[ "$failed" -gt 0 ]]; then
+  finish
+fi
+
+proxy_mode="$(printf '%s' "$PROXY_MODE" | tr '[:upper:]' '[:lower:]')"
 proxy_allow_udp="$(printf '%s' "${PROXY_ALLOW_UDP:-no}" | tr '[:upper:]' '[:lower:]')"
+ssh_port="${SSH_PORT:-{{ proxy_ssh_port }}}"
+config_json="{{ proxy_config_path }}"
+tun_if="${TUN_INTERFACE_NAME:-{{ proxy_tun_interface_name }}}"
+tun_ipv4="${TUN_IPV4_CIDR:-{{ proxy_tun_ipv4_cidr }}}"
 
-if [[ -z "$expected_ip" ]]; then
-  echo "Expected IP is empty. Pass --expected-ip or set PROXY_EXPECTED_EGRESS_IP in $env_file" >&2
-  exit 1
+case "$proxy_mode" in
+  socks5|http) record_pass "PROXY_MODE is supported: $proxy_mode" ;;
+  *) record_fail "Unsupported PROXY_MODE: $PROXY_MODE" ;;
+esac
+
+case "$proxy_allow_udp" in
+  1|true|yes|on) proxy_allow_udp="yes" ;;
+  *) proxy_allow_udp="no" ;;
+esac
+
+if [[ "$strict_udp" == "auto" ]]; then
+  strict_udp="$proxy_allow_udp"
 fi
-
-if ! [[ "$udp_port" =~ ^[0-9]+$ ]]; then
-  echo "UDP port must be numeric: $udp_port" >&2
-  exit 1
-fi
-
-fail() { echo "FAIL: $*" >&2; exit 1; }
-pass() { echo "PASS: $*"; }
 
 service_state="$(systemctl is-active sing-box || true)"
-[[ "$service_state" == "active" ]] || fail "sing-box.service is not active (got: $service_state)"
-pass "sing-box.service is active"
+[[ "$service_state" == "active" ]] && record_pass "sing-box.service is active" || record_fail "sing-box.service is not active (got: $service_state)"
 
-egress_ip="$(curl -4 -fsS https://ipv4.icanhazip.com | tr -d '\r\n')"
-[[ "$egress_ip" == "$expected_ip" ]] || fail "icanhazip mismatch: expected $expected_ip, got $egress_ip"
-pass "icanhazip egress IP matches expected IP $expected_ip"
+service_enabled="$(systemctl is-enabled sing-box || true)"
+[[ "$service_enabled" == "enabled" ]] && record_pass "sing-box.service is enabled" || record_fail "sing-box.service is not enabled (got: $service_enabled)"
 
-trace_ip="$(curl -4 -fsS https://cloudflare.com/cdn-cgi/trace | awk -F= '$1 == "ip" {print $2}' | tr -d '\r\n')"
-[[ "$trace_ip" == "$expected_ip" ]] || fail "cloudflare trace mismatch: expected $expected_ip, got $trace_ip"
-pass "cloudflare trace IP matches expected IP $expected_ip"
+if systemctl --quiet is-failed sing-box; then
+  record_fail "sing-box.service is in failed state"
+else
+  record_pass "sing-box.service is not failed"
+fi
 
-dns_answer="$(dig +short A "$dns_name" | sed '/^$/d')"
-[[ -n "$dns_answer" ]] || fail "DNS resolution returned no A records for $dns_name"
-pass "DNS resolution returned A records for $dns_name"
-
-route_2022="$(ip route show table 2022 || true)"
-printf '%s\n' "$route_2022" | grep -q 'default via 172\.19\.0\.2 dev singtun0' || fail "table 2022 does not route default traffic via singtun0"
-pass "policy route table 2022 points default traffic to singtun0"
-
-nft_rules="$(nft list ruleset 2>/dev/null || true)"
-printf '%s\n' "$nft_rules" | grep -q 'table inet sing-box' || fail "nftables sing-box table is missing"
-printf '%s\n' "$nft_rules" | grep -q 'dport 53' || fail "DNS hijack rules were not found in nftables"
-pass "nftables sing-box table and DNS hijack rules exist"
-
-ssh_port="${SSH_PORT:-{{ proxy_ssh_port }}}"
 {% if proxy_ssh_bypass_enabled %}
-nft list table inet ssh_mgmt_bypass >/dev/null 2>&1 \
-  || fail "nftables SSH management bypass table is missing"
-nft list table inet ssh_mgmt_bypass | grep -q "dport $ssh_port" \
-  || fail "SSH management bypass table does not mark destination port $ssh_port"
-nft list table inet ssh_mgmt_bypass | grep -q "sport $ssh_port" \
-  || fail "SSH management bypass table does not mark source port $ssh_port"
-pass "nftables SSH management bypass table exists for TCP/$ssh_port"
-{% else %}
-echo "WARN: nftables SSH management bypass assertion skipped because proxy_ssh_bypass_enabled=false."
+ssh_bypass_state="$(systemctl is-active ssh-mgmt-bypass.service || true)"
+[[ "$ssh_bypass_state" == "active" ]] && record_pass "ssh-mgmt-bypass.service is active" || record_fail "ssh-mgmt-bypass.service is not active (got: $ssh_bypass_state)"
+
+ssh_bypass_enabled="$(systemctl is-enabled ssh-mgmt-bypass.service || true)"
+[[ "$ssh_bypass_enabled" == "enabled" ]] && record_pass "ssh-mgmt-bypass.service is enabled" || record_fail "ssh-mgmt-bypass.service is not enabled (got: $ssh_bypass_enabled)"
 {% endif %}
 
-config_json="{{ proxy_config_path }}"
+if [[ "{{ proxy_healthcheck_enabled | bool }}" == "True" ]]; then
+  timer_state="$(systemctl is-active verify-transparent-proxy.timer || true)"
+  [[ "$timer_state" == "active" ]] && record_pass "verify-transparent-proxy.timer is active" || record_fail "verify-transparent-proxy.timer is not active (got: $timer_state)"
+
+  timer_enabled="$(systemctl is-enabled verify-transparent-proxy.timer || true)"
+  [[ "$timer_enabled" == "enabled" ]] && record_pass "verify-transparent-proxy.timer is enabled" || record_fail "verify-transparent-proxy.timer is not enabled (got: $timer_enabled)"
+fi
+
 if [[ -r "$config_json" ]]; then
-  jq -e --argjson ssh_port "$ssh_port" '
-    .route.rules
-    | any(.action == "bypass" and (.network // [] | index("tcp")) and (.port // [] | index($ssh_port)))
-  ' "$config_json" >/dev/null || fail "sing-box config is missing TCP destination port $ssh_port bypass for SSH"
-  jq -e --argjson ssh_port "$ssh_port" '
-    .route.rules
-    | any(.action == "bypass" and (.network // [] | index("tcp")) and (.source_port // [] | index($ssh_port)))
-  ' "$config_json" >/dev/null || fail "sing-box config is missing TCP source port $ssh_port bypass for SSH replies"
-  pass "TCP/$ssh_port ingress and reply traffic bypass sing-box proxy routing"
+  record_pass "sing-box config is readable: $config_json"
+  if sing-box check -c "$config_json" >/dev/null 2>&1; then
+    record_pass "sing-box config passes sing-box check"
+  else
+    record_fail "sing-box config check failed: $config_json"
+  fi
 else
-  fail "sing-box config is not readable: $config_json"
+  record_fail "sing-box config is not readable: $config_json"
+fi
+
+proxy_ip="$(resolve_ipv4 "$PROXY_HOST" 2>/dev/null || true)"
+[[ -n "$proxy_ip" ]] && record_pass "proxy host resolves to $proxy_ip" || record_fail "Failed to resolve PROXY_HOST=$PROXY_HOST"
+
+if [[ -r "$config_json" && -n "$proxy_ip" ]]; then
+  jq -e --arg mode "$proxy_mode" --arg ip "$proxy_ip" --argjson port "$PROXY_PORT" '
+    .outbounds
+    | any(.tag == "proxy"
+        and (($mode == "socks5" and .type == "socks") or ($mode == "http" and .type == "http"))
+        and .server == $ip
+        and .server_port == $port)
+  ' "$config_json" >/dev/null 2>&1 \
+    && record_pass "sing-box proxy outbound matches env endpoint" \
+    || record_fail "sing-box proxy outbound does not match env endpoint"
+
+  jq -e --arg tun_if "$tun_if" --arg tun_ipv4 "$tun_ipv4" '
+    .inbounds
+    | any(.type == "tun"
+        and .interface_name == $tun_if
+        and ((.address // []) | index($tun_ipv4))
+        and .auto_route == true
+        and .auto_redirect == true
+        and .strict_route == true)
+  ' "$config_json" >/dev/null 2>&1 \
+    && record_pass "sing-box TUN inbound is configured with auto_route, auto_redirect, strict_route" \
+    || record_fail "sing-box TUN inbound is missing or not strict"
+
+  jq -e '
+    .dns.final == "dot-primary"
+    and (.dns.servers | any(.tag == "dot-primary" and .type == "tls" and .detour == "proxy"))
+    and (.dns.rules | any(.action == "route" and .server == "dot-primary"))
+  ' "$config_json" >/dev/null 2>&1 \
+    && record_pass "sing-box DNS routes DoT through proxy" \
+    || record_fail "sing-box DNS is not configured to route DoT through proxy"
+
+  jq -e --argjson ssh_port "$ssh_port" '
+    .route.final == "proxy"
+    and (.route.rules | any(.action == "hijack-dns" and ((.port // []) | index(53))))
+    and (.route.rules | any(.action == "bypass" and ((.network // []) | index("tcp")) and ((.port // []) | index($ssh_port))))
+    and (.route.rules | any(.action == "bypass" and ((.network // []) | index("tcp")) and ((.source_port // []) | index($ssh_port))))
+  ' "$config_json" >/dev/null 2>&1 \
+    && record_pass "sing-box route rules include DNS hijack and TCP/$ssh_port SSH bypass" \
+    || record_fail "sing-box route rules are missing DNS hijack or SSH bypass"
+
+  jq -e --arg proxy_ip "$proxy_ip" '
+    .route.rules | any(.action == "bypass" and ((.ip_cidr // []) | index($proxy_ip + "/32")))
+  ' "$config_json" >/dev/null 2>&1 \
+    && record_pass "sing-box route rules bypass upstream proxy IP" \
+    || record_fail "sing-box route rules do not bypass the upstream proxy IP"
+fi
+
+route_2022="$(ip route show table 2022 2>/dev/null || true)"
+printf '%s\n' "$route_2022" | grep -q "default via 172\\.19\\.0\\.2 dev $tun_if" \
+  && record_pass "policy route table 2022 points default traffic to $tun_if" \
+  || record_fail "table 2022 does not route default traffic via $tun_if"
+
+ip rule show | grep -q 'lookup 2022' \
+  && record_pass "ip rule references table 2022" \
+  || record_fail "ip rule for table 2022 is missing"
+
+ip link show "$tun_if" >/dev/null 2>&1 \
+  && record_pass "TUN interface $tun_if exists" \
+  || record_fail "TUN interface $tun_if is missing"
+
+nft_rules="$(nft list ruleset 2>/dev/null || true)"
+printf '%s\n' "$nft_rules" | grep -q 'table inet sing-box' \
+  && record_pass "nftables sing-box table exists" \
+  || record_fail "nftables sing-box table is missing"
+printf '%s\n' "$nft_rules" | grep -q 'dport 53' \
+  && record_pass "nftables DNS hijack rules exist" \
+  || record_fail "DNS hijack rules were not found in nftables"
+
+{% if proxy_ssh_bypass_enabled %}
+if nft list table inet ssh_mgmt_bypass >/dev/null 2>&1; then
+  record_pass "nftables SSH management bypass table exists"
+  nft list table inet ssh_mgmt_bypass | grep -q "dport $ssh_port" \
+    && record_pass "SSH management bypass marks destination port $ssh_port" \
+    || record_fail "SSH management bypass table does not mark destination port $ssh_port"
+  nft list table inet ssh_mgmt_bypass | grep -q "sport $ssh_port" \
+    && record_pass "SSH management bypass marks source port $ssh_port" \
+    || record_fail "SSH management bypass table does not mark source port $ssh_port"
+else
+  record_fail "nftables SSH management bypass table is missing"
+fi
+{% endif %}
+
+direct_proxy_ip="$({{ proxy_preflight_script_path }} "$env_file" --expected-ip "$expected_ip" 2>/tmp/verify-proxy-preflight.err | awk '/Proxy endpoint OK:/ {print $4}' | tail -n 1)"
+if [[ "$direct_proxy_ip" == "$expected_ip" ]]; then
+  record_pass "direct proxy endpoint check returns expected IP $expected_ip"
+else
+  record_fail "Direct proxy endpoint check failed or returned unexpected IP: ${direct_proxy_ip:-empty}; $(cat /tmp/verify-proxy-preflight.err 2>/dev/null || true)"
+fi
+
+egress_ip_icanhazip="$(curl_ip https://ipv4.icanhazip.com 2>/tmp/verify-icanhazip.err || true)"
+[[ "$egress_ip_icanhazip" == "$expected_ip" ]] \
+  && record_pass "icanhazip egress IP matches expected IP $expected_ip" \
+  || record_fail "icanhazip mismatch: expected $expected_ip, got ${egress_ip_icanhazip:-empty}; $(cat /tmp/verify-icanhazip.err 2>/dev/null || true)"
+
+egress_ip_ifconfig="$(curl_ip https://ifconfig.me/ip 2>/tmp/verify-ifconfig.err || true)"
+[[ "$egress_ip_ifconfig" == "$expected_ip" ]] \
+  && record_pass "ifconfig.me egress IP matches expected IP $expected_ip" \
+  || record_fail "ifconfig.me mismatch: expected $expected_ip, got ${egress_ip_ifconfig:-empty}; $(cat /tmp/verify-ifconfig.err 2>/dev/null || true)"
+
+trace_ip="$(curl_ip https://cloudflare.com/cdn-cgi/trace 2>/tmp/verify-cloudflare.err | awk -F= '$1 == "ip" {print $2}' || true)"
+[[ "$trace_ip" == "$expected_ip" ]] \
+  && record_pass "cloudflare trace IP matches expected IP $expected_ip" \
+  || record_fail "cloudflare trace mismatch: expected $expected_ip, got ${trace_ip:-empty}; $(cat /tmp/verify-cloudflare.err 2>/dev/null || true)"
+
+dns_answer="$(dig +time=3 +tries=2 +short A "$dns_name" 2>/tmp/verify-dig.err | sed '/^$/d' || true)"
+[[ -n "$dns_answer" ]] \
+  && record_pass "DNS resolution returned A records for $dns_name" \
+  || record_fail "DNS resolution returned no A records for $dns_name; $(cat /tmp/verify-dig.err 2>/dev/null || true)"
+
+if command -v {{ proxy_check_dns_script_path }} >/dev/null 2>&1; then
+  {{ proxy_check_dns_script_path }} "$env_file" "$dns_name" >/tmp/verify-check-dns.out 2>/tmp/verify-check-dns.err \
+    && record_pass "DNS proxy path check confirms hijacked DNS traffic" \
+    || record_fail "DNS proxy path check failed for $dns_name; $(cat /tmp/verify-check-dns.err 2>/dev/null || true)"
 fi
 
 before_logs="$(mktemp)"
 after_logs="$(mktemp)"
-trap 'rm -f "$before_logs" "$after_logs"' EXIT
+trap 'rm -f "$before_logs" "$after_logs" /tmp/verify-proxy-preflight.err /tmp/verify-icanhazip.err /tmp/verify-ifconfig.err /tmp/verify-cloudflare.err /tmp/verify-dig.err /tmp/verify-check-dns.out /tmp/verify-check-dns.err' EXIT
 
-journalctl -u sing-box --no-pager -n 120 --output cat > "$before_logs"
-bash -lc "printf 'verify-transparent-proxy\n' > /dev/udp/$udp_host/$udp_port"
+journalctl -u sing-box --no-pager -n 120 --output cat > "$before_logs" 2>/dev/null || true
+bash -lc "printf 'verify-global-proxy\n' > /dev/udp/$udp_host/$udp_port" 2>/tmp/verify-udp.err || true
 sleep 1
-journalctl -u sing-box --no-pager -n 160 --output cat > "$after_logs"
+journalctl -u sing-box --no-pager -n 180 --output cat > "$after_logs" 2>/dev/null || true
 
-if [[ "$proxy_mode" == "socks5" && "$proxy_allow_udp" == "yes" ]]; then
-  grep -q "outbound/socks\\[proxy\\]: outbound packet connection to $udp_host:$udp_port" "$after_logs" \
-    || fail "UDP probe was not observed exiting via outbound/socks[proxy] to $udp_host:$udp_port"
-  pass "UDP probe was observed in sing-box logs via outbound/socks[proxy]"
+if [[ "$strict_udp" == "yes" ]]; then
+  if [[ "$proxy_mode" == "socks5" && "$proxy_allow_udp" == "yes" ]] \
+    && grep -q "outbound/socks\\[proxy\\]: outbound packet connection to $udp_host:$udp_port" "$after_logs"; then
+    record_pass "UDP probe was observed in sing-box logs via outbound/socks[proxy]"
+  else
+    record_fail "UDP probe was not observed via outbound/socks[proxy] to $udp_host:$udp_port"
+  fi
 else
-  echo "WARN: UDP proxy assertion skipped because PROXY_MODE=$proxy_mode and PROXY_ALLOW_UDP=$proxy_allow_udp."
+  record_pass "UDP strict check skipped because PROXY_ALLOW_UDP=$proxy_allow_udp"
 fi
 
-echo
-echo "Verification summary:"
-echo "  Expected egress IP: $expected_ip"
-echo "  Observed egress IP: $egress_ip"
-echo "  Proxy mode: $proxy_mode"
-echo "  DNS name checked: $dns_name"
-echo "  UDP probe target: $udp_host:$udp_port"
+finish

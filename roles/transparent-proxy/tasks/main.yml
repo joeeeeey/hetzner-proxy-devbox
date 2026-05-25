@@ -377,3 +377,9 @@
     daemon_reload: true
   when: transparent_proxy_enabled | bool
   tags: [devbox, proxy]
+
+- name: Strictly verify transparent proxy
+  command: "{{ proxy_verify_script_path }} --expected-ip {{ proxy_expected_egress_ip }}"
+  changed_when: false
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy, verify]

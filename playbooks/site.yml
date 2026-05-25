@@ -143,7 +143,7 @@
       tags: [devbox, verify]
 
     - name: Verify transparent proxy when enabled
-      command: "/usr/local/sbin/verify-transparent-proxy --expected-ip {{ proxy_expected_egress_ip }}"
+      command: "/usr/local/sbin/verify-global-proxy --expected-ip {{ proxy_expected_egress_ip }}"
       changed_when: false
       when: transparent_proxy_enabled | bool
       tags: [devbox, verify, proxy]
