@@ -1,0 +1,13 @@
+table inet ssh_mgmt_bypass {
+  chain prerouting {
+    type filter hook prerouting priority dstnat - 2; policy accept;
+    meta l4proto tcp tcp dport {{ proxy_ssh_port }} meta mark set 0x2024 ct mark set 0x2024 return
+    meta l4proto tcp tcp sport {{ proxy_ssh_port }} meta mark set 0x2024 ct mark set 0x2024 return
+  }
+
+  chain output {
+    type route hook output priority mangle - 2; policy accept;
+    meta l4proto tcp tcp dport {{ proxy_ssh_port }} meta mark set 0x2024 ct mark set 0x2024 return
+    meta l4proto tcp tcp sport {{ proxy_ssh_port }} meta mark set 0x2024 ct mark set 0x2024 return
+  }
+}

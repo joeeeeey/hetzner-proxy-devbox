@@ -1,0 +1,162 @@
+---
+- name: Provision Hetzner proxy devbox
+  hosts: devboxes
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    ansible_become: false
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    devbox_hcloud_api_token: >-
+      {{
+        lookup('env', 'HETZNER_TOKEN')
+        if (lookup('env', 'HETZNER_TOKEN') | length > 0)
+        else lookup('env', 'HCLOUD_TOKEN')
+      }}
+
+  pre_tasks:
+    - name: Build root and owner access model
+      set_fact:
+        devbox_root_authorized_keys: "{{ [devbox_ssh_public_key] }}"
+        devbox_users:
+          - name: "{{ devbox_username }}"
+            admin: true
+            ssh_public_keys:
+              - "{{ devbox_ssh_public_key }}"
+
+    - name: Parse proxy_url when provided
+      set_fact:
+        proxy_mode: >-
+          {{
+            'socks5'
+            if ((proxy_url | urlsplit('scheme') | lower) in ['socks5', 'socks5h'])
+            else (proxy_url | urlsplit('scheme') | lower)
+          }}
+        proxy_host: "{{ proxy_url | urlsplit('hostname') }}"
+        proxy_port: "{{ proxy_url | urlsplit('port') }}"
+        proxy_username: "{{ proxy_url | urlsplit('username') }}"
+        proxy_password: "{{ proxy_url | urlsplit('password') }}"
+      when:
+        - transparent_proxy_enabled | bool
+        - proxy_url is defined
+        - proxy_url | length > 0
+
+    - name: Assert required local inputs are available
+      assert:
+        that:
+          - devbox_hcloud_api_token | length > 0
+          - hcloud_server_name is defined
+          - hcloud_server_name | length > 0
+          - devbox_username is defined
+          - devbox_username | length > 0
+          - devbox_ssh_public_key is defined
+          - devbox_ssh_public_key | length > 0
+        fail_msg: >-
+          Set HETZNER_TOKEN or HCLOUD_TOKEN, hcloud_server_name, devbox_username,
+          and devbox_ssh_public_key before running the bootstrap.
+
+    - name: Assert transparent proxy inputs are complete when enabled
+      assert:
+        that:
+          - proxy_mode in ['socks5', 'http']
+          - proxy_host | length > 0
+          - proxy_port | string | length > 0
+          - proxy_username | length > 0
+          - proxy_password | length > 0
+          - proxy_expected_egress_ip | length > 0
+        fail_msg: >-
+          Transparent proxy requires proxy_mode, proxy_host, proxy_port,
+          proxy_username, proxy_password, and proxy_expected_egress_ip.
+      when: transparent_proxy_enabled | bool
+
+  tasks:
+    - name: Render cloud-init root bootstrap payload
+      set_fact:
+        devbox_cloud_init: "{{ lookup('template', 'templates/cloud-init-root-bootstrap.yml.j2') }}"
+
+    - name: Ensure Hetzner server exists
+      hetzner.hcloud.server:
+        api_token: "{{ devbox_hcloud_api_token }}"
+        name: "{{ hcloud_server_name }}"
+        server_type: "{{ hcloud_server_type }}"
+        image: "{{ hcloud_image }}"
+        location: "{{ hcloud_location }}"
+        backups: "{{ hcloud_backups }}"
+        delete_protection: "{{ hcloud_delete_protection }}"
+        rebuild_protection: "{{ hcloud_delete_protection }}"
+        enable_ipv4: true
+        enable_ipv6: "{{ hcloud_enable_ipv6 }}"
+        labels: "{{ hcloud_labels | combine({'managed_by': 'ansible', 'project': 'hetzner-proxy-devbox'}, recursive=True) }}"
+        user_data: "{{ devbox_cloud_init }}"
+        state: present
+      register: devbox_server
+
+    - name: Wait for SSH to become reachable
+      wait_for:
+        host: "{{ devbox_server.hcloud_server.ipv4_address }}"
+        port: "{{ devbox_ssh_port }}"
+        delay: 5
+        timeout: 300
+      when: not ansible_check_mode
+
+    - name: Add provisioned host to runtime inventory
+      add_host:
+        name: "{{ inventory_hostname }}"
+        groups: provisioned_devboxes
+        ansible_host: "{{ devbox_server.hcloud_server.ipv4_address }}"
+        ansible_user: root
+        ansible_become: true
+        ansible_port: "{{ devbox_ssh_port }}"
+        ansible_ssh_common_args: "-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+        devbox_root_authorized_keys: "{{ devbox_root_authorized_keys }}"
+        devbox_users: "{{ devbox_users }}"
+        devbox_username: "{{ devbox_username }}"
+      when: not ansible_check_mode
+
+- name: Configure provisioned Hetzner proxy devbox
+  hosts: provisioned_devboxes
+  gather_facts: true
+  become: true
+
+  roles:
+    - role: host-base
+      tags: [devbox, base]
+
+    - role: preinstall
+      tags: [devbox, preinstall]
+
+    - role: security
+      tags: [devbox, security]
+
+    - role: transparent-proxy
+      when: transparent_proxy_enabled | bool
+      tags: [devbox, proxy]
+
+    - role: users
+      tags: [devbox, users]
+
+  post_tasks:
+    - name: Verify owner user exists
+      command: "id {{ devbox_username }}"
+      changed_when: false
+      tags: [devbox, verify]
+
+    - name: Verify transparent proxy when enabled
+      command: "/usr/local/sbin/verify-transparent-proxy --expected-ip {{ proxy_expected_egress_ip }}"
+      changed_when: false
+      when: transparent_proxy_enabled | bool
+      tags: [devbox, verify, proxy]
+
+    - name: Display access summary
+      debug:
+        msg: |
+          Hetzner proxy devbox configured.
+          Server: {{ hcloud_server_name }}
+          VM IPv4: {{ ansible_host }}
+          SSH:
+            root@{{ ansible_host }}
+            {{ devbox_username }}@{{ ansible_host }}
+          Transparent proxy enabled: {{ transparent_proxy_enabled | bool }}
+          Proxy expected egress IP: {{ proxy_expected_egress_ip | default('n/a', true) }}
+      tags: [devbox, verify]

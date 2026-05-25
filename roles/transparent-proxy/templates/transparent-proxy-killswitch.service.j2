@@ -1,0 +1,14 @@
+[Unit]
+Description=Experimental fail-closed nftables rules for global sing-box proxy
+After=network-online.target
+Wants=network-online.target
+Before=sing-box.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ proxy_killswitch_apply_path }} {{ proxy_env_path }}
+ExecStop={{ proxy_killswitch_clear_path }}
+
+[Install]
+WantedBy=multi-user.target

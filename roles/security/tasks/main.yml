@@ -1,0 +1,79 @@
+---
+- name: Check whether UFW is active
+  command: ufw status
+  register: devbox_ufw_status
+  changed_when: false
+  failed_when: false
+  tags: [devbox, security, ufw]
+
+- name: Reset UFW for fresh devboxes
+  ufw:
+    state: reset
+  when: "'inactive' in devbox_ufw_status.stdout"
+  tags: [devbox, security, ufw]
+
+- name: Set UFW default incoming policy to deny
+  ufw:
+    direction: incoming
+    policy: deny
+  tags: [devbox, security, ufw]
+
+- name: Set UFW default outgoing policy to allow
+  ufw:
+    direction: outgoing
+    policy: allow
+  tags: [devbox, security, ufw]
+
+- name: Allow public ports for devboxes
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment }}"
+  loop: "{{ devbox_public_ports }}"
+  tags: [devbox, security, ufw]
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+  tags: [devbox, security, ufw]
+
+- name: Configure fail2ban jail.local
+  template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    mode: "0644"
+  notify: Restart fail2ban
+  tags: [devbox, security, fail2ban]
+
+- name: Ensure fail2ban is enabled and started
+  systemd:
+    name: fail2ban
+    enabled: yes
+    state: started
+  tags: [devbox, security, fail2ban]
+
+- name: Ensure /proc hidepid fstab entry is present
+  lineinfile:
+    path: /etc/fstab
+    regexp: '^proc\s+/proc\s+proc\s+'
+    line: "proc /proc proc defaults,hidepid={{ devbox_proc_hidepid_mode }} 0 0"
+    state: present
+    create: false
+    backup: true
+  when: devbox_proc_hidepid_enabled | bool
+  tags: [devbox, security, proc]
+
+- name: Read current /proc mount options
+  command: findmnt -n -o OPTIONS /proc
+  register: devbox_proc_mount_options
+  changed_when: false
+  when: devbox_proc_hidepid_enabled | bool
+  tags: [devbox, security, proc]
+
+- name: Remount /proc with hidepid
+  command: "mount -o remount,hidepid={{ devbox_proc_hidepid_mode }} /proc"
+  when:
+    - devbox_proc_hidepid_enabled | bool
+    - "'hidepid=' not in devbox_proc_mount_options.stdout"
+  tags: [devbox, security, proc]

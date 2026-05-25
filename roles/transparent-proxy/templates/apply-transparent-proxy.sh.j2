@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+ENV_FILE="${1:-{{ proxy_env_path }}}"
+
+ensure_root
+require_commands sing-box install systemctl mktemp rm cp cat sysctl
+load_env_file "$ENV_FILE"
+
+TMP_CONFIG="$(mktemp)"
+trap 'rm -f "$TMP_CONFIG"' EXIT
+
+{{ proxy_render_script_path }} "$ENV_FILE" >"$TMP_CONFIG"
+sing-box check -c "$TMP_CONFIG"
+
+if [[ -f {{ proxy_config_path }} && ! -f {{ proxy_config_dist_path }} ]]; then
+  cp {{ proxy_config_path }} {{ proxy_config_dist_path }}
+fi
+
+install -o root -g sing-box -m 0640 "$TMP_CONFIG" {{ proxy_config_path }}
+
+if bool_true "${ENABLE_IPV6_EGRESS:-no}"; then
+  rm -f /etc/sysctl.d/90-transparent-proxy-ipv6.conf
+else
+  cat >/etc/sysctl.d/90-transparent-proxy-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+EOF
+fi
+sysctl --system >/dev/null
+
+if bool_true "${ENABLE_KILL_SWITCH:-no}"; then
+  systemctl enable transparent-proxy-killswitch.service
+  systemctl restart transparent-proxy-killswitch.service
+else
+  systemctl disable --now transparent-proxy-killswitch.service >/dev/null 2>&1 || true
+  if command -v {{ proxy_killswitch_clear_path }} >/dev/null 2>&1; then
+    {{ proxy_killswitch_clear_path }} >/dev/null 2>&1 || true
+  fi
+fi
+
+systemctl enable sing-box
+systemctl restart sing-box
+
+echo "Applied {{ proxy_config_path }} from $ENV_FILE"
+echo "Current sing-box state:"
+systemctl --no-pager --full status sing-box || true

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  exec sudo "$0" "$@"
+fi
+
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+ENV_FILE="${1:-{{ proxy_env_path }}}"
+TEST_DOMAIN="${2:-example.com}"
+
+require_commands dig journalctl grep date
+load_env_file "$ENV_FILE"
+
+DNS_SERVER_IP="${DNS_SERVER_IP:-{{ proxy_dns_server_ip }}}"
+DNS_SERVER_PORT="${DNS_SERVER_PORT:-{{ proxy_dns_server_port }}}"
+
+case "${PROXY_MODE:-socks5}" in
+  socks5) OUTBOUND_TYPE="socks" ;;
+  http) OUTBOUND_TYPE="http" ;;
+  *)
+    echo "Unsupported PROXY_MODE=${PROXY_MODE:-}" >&2
+    exit 1
+    ;;
+esac
+
+SINCE_UTC="$(date -u +"%Y-%m-%d %H:%M:%S")"
+dig +time=2 +tries=1 +short A "$TEST_DOMAIN" >/dev/null 2>&1 || true
+sleep 2
+
+LOGS="$(journalctl -u sing-box --since "$SINCE_UTC UTC" --no-pager --output cat || true)"
+MATCHES="$(printf '%s\n' "$LOGS" | grep -E "inbound packet connection to 172\\.19\\.0\\.2:53|outbound/${OUTBOUND_TYPE}\\[proxy\\]: outbound connection to ${DNS_SERVER_IP}:${DNS_SERVER_PORT}|dns: (exchanged|cached) (A|SOA) ${TEST_DOMAIN//./\\.}\\." || true)"
+
+echo "Test domain: $TEST_DOMAIN"
+echo "Expected upstream DNS: ${DNS_SERVER_IP}:${DNS_SERVER_PORT} via ${OUTBOUND_TYPE}[proxy]"
+
+HAS_INBOUND=0
+HAS_OUTBOUND=0
+HAS_DOMAIN=0
+
+if printf '%s\n' "$MATCHES" | grep -q "inbound packet connection to 172.19.0.2:53"; then
+  HAS_INBOUND=1
+fi
+if printf '%s\n' "$MATCHES" | grep -q "outbound/${OUTBOUND_TYPE}\\[proxy\\]: outbound connection to ${DNS_SERVER_IP}:${DNS_SERVER_PORT}"; then
+  HAS_OUTBOUND=1
+fi
+if printf '%s\n' "$MATCHES" | grep -Eq "dns: (exchanged|cached) (A|SOA) ${TEST_DOMAIN//./\\.}\\."; then
+  HAS_DOMAIN=1
+fi
+
+if [[ "$HAS_INBOUND" -eq 1 && "$HAS_OUTBOUND" -eq 1 ]]; then
+  if [[ "$HAS_DOMAIN" -eq 1 ]]; then
+    echo "DNS path: PROXIED"
+  else
+    echo "DNS path: PROXIED"
+    echo "Note: inbound hijack and upstream DoT/HTTP-over-proxy were observed; no per-domain exchange line was emitted in this short window."
+  fi
+  printf '%s\n' "$MATCHES"
+  exit 0
+fi
+
+if [[ "$HAS_INBOUND" -eq 1 && "$HAS_DOMAIN" -eq 1 ]]; then
+  echo "DNS path: PROXIED (reused upstream session)"
+  echo "Note: sing-box may reuse an existing upstream DNS TLS/TCP session, so a fresh outbound connect log line is not always emitted."
+  printf '%s\n' "$MATCHES"
+  exit 0
+fi
+
+echo "DNS path: NOT_CONFIRMED"
+echo "Recent matching log lines:"
+printf '%s\n' "$MATCHES"
+exit 1

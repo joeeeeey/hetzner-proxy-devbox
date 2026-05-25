@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+env_file="{{ proxy_env_path }}"
+skip_connect_test=0
+expected_ip=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo update-transparent-proxy-endpoint \
+    --mode <http|socks5> \
+    --host <proxy-host> \
+    --port <proxy-port> \
+    --expected-ip <proxy-egress-ip> \
+    [--username <proxy-username>] \
+    [--password <proxy-password>] \
+    [--skip-connect-test]
+
+The expected IP is the proxy provider's fixed egress IP, not the Hetzner VM IPv4.
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+ensure_root
+require_commands curl install mktemp tr
+
+proxy_mode=""
+proxy_host=""
+proxy_port=""
+proxy_username=""
+proxy_password=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode) proxy_mode="${2:-}"; shift 2 ;;
+    --host) proxy_host="${2:-}"; shift 2 ;;
+    --port) proxy_port="${2:-}"; shift 2 ;;
+    --expected-ip) expected_ip="${2:-}"; shift 2 ;;
+    --username) proxy_username="${2:-}"; shift 2 ;;
+    --password) proxy_password="${2:-}"; shift 2 ;;
+    --skip-connect-test) skip_connect_test=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [[ ! -r "$env_file" ]]; then
+  echo "Cannot read env file: $env_file" >&2
+  exit 1
+fi
+
+set -a
+source "$env_file"
+set +a
+
+PROXY_MODE="${proxy_mode:-${PROXY_MODE:-}}"
+PROXY_HOST="${proxy_host:-${PROXY_HOST:-}}"
+PROXY_PORT="${proxy_port:-${PROXY_PORT:-}}"
+PROXY_USERNAME="${proxy_username:-${PROXY_USERNAME:-}}"
+PROXY_PASSWORD="${proxy_password:-${PROXY_PASSWORD:-}}"
+PROXY_EXPECTED_EGRESS_IP="${expected_ip:-${PROXY_EXPECTED_EGRESS_IP:-}}"
+
+for required_var in \
+  PROXY_MODE PROXY_HOST PROXY_PORT PROXY_USERNAME PROXY_PASSWORD \
+  PROXY_EXPECTED_EGRESS_IP DNS_SERVER_IP DNS_SERVER_PORT DNS_TLS_SERVER_NAME
+do
+  if [[ -z "${!required_var:-}" ]]; then
+    echo "Missing required variable after overrides: $required_var" >&2
+    exit 1
+  fi
+done
+
+PROXY_MODE="$(printf '%s' "$PROXY_MODE" | tr '[:upper:]' '[:lower:]')"
+
+case "$PROXY_MODE" in
+  http|socks5) ;;
+  *) echo "Unsupported PROXY_MODE: $PROXY_MODE" >&2; exit 1 ;;
+esac
+
+for numeric_var in PROXY_PORT DNS_SERVER_PORT; do
+  if ! [[ "${!numeric_var}" =~ ^[0-9]+$ ]]; then
+    echo "Variable must be numeric: $numeric_var=${!numeric_var}" >&2
+    exit 1
+  fi
+done
+
+tmp_env="$(mktemp)"
+trap 'rm -f "$tmp_env"' EXIT
+
+{
+  echo "# Managed by update-transparent-proxy-endpoint"
+  printf 'PROXY_MODE=%q\n' "$PROXY_MODE"
+  printf 'PROXY_HOST=%q\n' "$PROXY_HOST"
+  printf 'PROXY_PORT=%q\n' "$PROXY_PORT"
+  printf 'PROXY_USERNAME=%q\n' "$PROXY_USERNAME"
+  printf 'PROXY_PASSWORD=%q\n' "$PROXY_PASSWORD"
+  printf 'PROXY_EXPECTED_EGRESS_IP=%q\n' "$PROXY_EXPECTED_EGRESS_IP"
+  echo
+  echo "# DNS over TLS goes through the proxy to avoid resolver leaks."
+  printf 'DNS_SERVER_IP=%q\n' "$DNS_SERVER_IP"
+  printf 'DNS_SERVER_PORT=%q\n' "$DNS_SERVER_PORT"
+  printf 'DNS_TLS_SERVER_NAME=%q\n' "$DNS_TLS_SERVER_NAME"
+  echo
+  printf 'ADMIN_IPS=%q\n' "${ADMIN_IPS:-}"
+  printf 'SSH_PORT=%q\n' "${SSH_PORT:-{{ proxy_ssh_port }}}"
+  printf 'DIRECT_PRIVATE_TRAFFIC=%q\n' "${DIRECT_PRIVATE_TRAFFIC:-yes}"
+  printf 'DIRECT_EXTRA_CIDRS=%q\n' "${DIRECT_EXTRA_CIDRS:-$(default_direct_extra_cidrs)}"
+  printf 'PROXY_ALLOW_UDP=%q\n' "${PROXY_ALLOW_UDP:-no}"
+  printf 'ENABLE_IPV6_EGRESS=%q\n' "${ENABLE_IPV6_EGRESS:-no}"
+  printf 'ENABLE_TUN_IPV6=%q\n' "${ENABLE_TUN_IPV6:-no}"
+  printf 'TUN_INTERFACE_NAME=%q\n' "${TUN_INTERFACE_NAME:-{{ proxy_tun_interface_name }}}"
+  printf 'TUN_IPV4_CIDR=%q\n' "${TUN_IPV4_CIDR:-{{ proxy_tun_ipv4_cidr }}}"
+  printf 'TUN_IPV6_CIDR=%q\n' "${TUN_IPV6_CIDR:-{{ proxy_tun_ipv6_cidr }}}"
+  printf 'SINGBOX_LOG_LEVEL=%q\n' "${SINGBOX_LOG_LEVEL:-{{ proxy_singbox_log_level }}}"
+  printf 'ENABLE_KILL_SWITCH=%q\n' "${ENABLE_KILL_SWITCH:-no}"
+} > "$tmp_env"
+
+if [[ "$skip_connect_test" -eq 0 ]]; then
+  echo "Testing upstream proxy endpoint..."
+  if [[ "$PROXY_MODE" == "socks5" ]]; then
+    test_ip="$(
+      curl -4 -fsS \
+        --proxy "socks5h://$PROXY_HOST:$PROXY_PORT" \
+        --proxy-user "$PROXY_USERNAME:$PROXY_PASSWORD" \
+        https://ipv4.icanhazip.com
+    )"
+  else
+    test_ip="$(
+      curl -4 -fsS \
+        -x "http://$PROXY_HOST:$PROXY_PORT" \
+        --proxy-user "$PROXY_USERNAME:$PROXY_PASSWORD" \
+        https://ipv4.icanhazip.com
+    )"
+  fi
+  test_ip="$(printf '%s' "$test_ip" | tr -d '\r\n')"
+  if [[ "$test_ip" != "$PROXY_EXPECTED_EGRESS_IP" ]]; then
+    echo "Upstream proxy egress IP mismatch: expected $PROXY_EXPECTED_EGRESS_IP, got $test_ip" >&2
+    exit 1
+  fi
+  echo "Upstream proxy test succeeded, observed IP: $test_ip"
+fi
+
+backup="{{ proxy_env_path }}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+install -o root -g sing-box -m 0640 "$env_file" "$backup"
+install -o root -g sing-box -m 0640 "$tmp_env" "$env_file"
+
+{{ proxy_apply_script_path }} "$env_file"
+
+final_ip="$(curl -4 -fsS https://ipv4.icanhazip.com)"
+echo "System-wide proxy updated."
+echo "Backup env: $backup"
+echo "Current system egress IP: $final_ip"

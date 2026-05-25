@@ -1,0 +1,18 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+timezone: UTC
+ssh_pwauth: false
+disable_root: false
+chpasswd:
+  expire: false
+users:
+  - name: root
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+{% for key in devbox_root_authorized_keys %}
+      - {{ key }}
+{% endfor %}
+runcmd:
+  - [bash, -lc, "chage -d -1 root || true"]

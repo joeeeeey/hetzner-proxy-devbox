@@ -1,0 +1,18 @@
+---
+hcloud_server_name: my-proxy-devbox
+hcloud_location: ash
+hcloud_server_type: cx22
+
+devbox_username: alice
+devbox_ssh_public_key: "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY alice@example"
+
+# This is the proxy provider's fixed outbound IP, not the Hetzner VM IPv4.
+proxy_expected_egress_ip: "203.0.113.10"
+proxy_url: "socks5://replace-me:replace-me@proxy.example.com:1080"
+
+# Advanced alternative to proxy_url:
+# proxy_mode: socks5
+# proxy_host: "proxy.example.com"
+# proxy_port: 1080
+# proxy_username: "replace-me"
+# proxy_password: "replace-me"

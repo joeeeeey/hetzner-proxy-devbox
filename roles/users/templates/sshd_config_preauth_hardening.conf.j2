@@ -1,0 +1,5 @@
+# Keep legitimate users from being starved by internet-wide SSH scanning.
+# This host allows only public-key auth for root and configured devbox users.
+LoginGraceTime {{ devbox_sshd_login_grace_time }}
+MaxStartups {{ devbox_sshd_max_startups }}
+UseDNS {{ devbox_sshd_use_dns }}

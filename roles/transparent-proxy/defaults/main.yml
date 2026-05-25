@@ -1,0 +1,67 @@
+---
+transparent_proxy_enabled: false
+proxy_expected_egress_ip: ""
+proxy_mode: socks5
+proxy_host: ""
+proxy_port: ""
+proxy_username: ""
+proxy_password: ""
+proxy_admin_ips: []
+proxy_ssh_port: 22
+proxy_dns_server_ip: 1.1.1.1
+proxy_dns_server_port: 853
+proxy_dns_tls_server_name: cloudflare-dns.com
+proxy_direct_private_traffic: true
+proxy_direct_extra_cidrs:
+  - 127.0.0.0/8
+  - 169.254.0.0/16
+proxy_direct_domain_suffixes:
+  - github.com
+  - githubusercontent.com
+  - githubassets.com
+proxy_allow_udp: false
+proxy_enable_ipv6_egress: false
+proxy_enable_tun_ipv6: false
+proxy_tun_interface_name: singtun0
+proxy_tun_ipv4_cidr: 172.19.0.1/30
+proxy_tun_ipv6_cidr: fdfe:dcba:9876::1/126
+proxy_singbox_log_level: info
+proxy_healthcheck_enabled: true
+proxy_healthcheck_on_boot_sec: 2min
+proxy_healthcheck_interval: 10min
+proxy_enable_killswitch: false
+proxy_sagernet_key_url: https://sing-box.app/gpg.key
+proxy_sagernet_key_path: /etc/apt/keyrings/sagernet.asc
+proxy_sagernet_sources_path: /etc/apt/sources.list.d/sagernet.sources
+proxy_env_path: /etc/sing-box/transparent-proxy.env
+proxy_config_path: /etc/sing-box/config.json
+proxy_config_dist_path: /etc/sing-box/config.json.dist
+proxy_support_root: /usr/local/share/transparent-proxy
+proxy_render_script_path: /usr/local/sbin/render-sing-box-proxy-config
+proxy_apply_script_path: /usr/local/sbin/apply-transparent-proxy
+proxy_update_script_path: /usr/local/sbin/update-transparent-proxy-endpoint
+proxy_verify_script_path: /usr/local/sbin/verify-transparent-proxy
+proxy_preflight_script_path: /usr/local/sbin/test-transparent-proxy-endpoint
+proxy_timer_wrapper_script_path: /usr/local/sbin/run-transparent-proxy-check
+proxy_common_script_path: /usr/local/sbin/common.sh
+proxy_check_dns_script_path: /usr/local/sbin/check-dns-proxy
+proxy_rollback_script_path: /usr/local/sbin/rollback-transparent-proxy
+proxy_verify_user_link_path: /usr/local/bin/verify-transparent-proxy
+proxy_check_dns_user_link_path: /usr/local/bin/check-dns-proxy
+proxy_verify_service_path: /etc/systemd/system/verify-transparent-proxy.service
+proxy_verify_timer_path: /etc/systemd/system/verify-transparent-proxy.timer
+proxy_killswitch_apply_path: /usr/local/sbin/apply-proxy-killswitch
+proxy_killswitch_clear_path: /usr/local/sbin/clear-proxy-killswitch
+proxy_killswitch_service_path: /etc/systemd/system/transparent-proxy-killswitch.service
+proxy_killswitch_nft_path: /etc/transparent-proxy/killswitch.nft
+proxy_ssh_bypass_enabled: true
+proxy_ssh_bypass_nft_path: /etc/nftables.d/ssh-mgmt-bypass.nft
+proxy_ssh_bypass_script_path: /usr/local/sbin/ssh-mgmt-bypass
+proxy_ssh_bypass_service_path: /etc/systemd/system/ssh-mgmt-bypass.service
+proxy_packages:
+  - sing-box
+  - jq
+  - dnsutils
+  - nftables
+  - ca-certificates
+  - curl

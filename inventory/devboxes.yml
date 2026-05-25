@@ -1,0 +1,8 @@
+---
+all:
+  children:
+    devboxes:
+      hosts:
+        example-devbox:
+    provisioned_devboxes:
+      hosts: {}

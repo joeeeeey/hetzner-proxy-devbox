@@ -1,0 +1,12 @@
+[Unit]
+Description=Run transparent proxy verification on a schedule
+Documentation=file:/etc/sing-box/proxy-bootstrap.md
+
+[Timer]
+Unit=verify-transparent-proxy.service
+OnBootSec={{ proxy_healthcheck_on_boot_sec }}
+OnUnitActiveSec={{ proxy_healthcheck_interval }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

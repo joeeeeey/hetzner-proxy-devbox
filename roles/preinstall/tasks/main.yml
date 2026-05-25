@@ -1,0 +1,178 @@
+---
+- name: Determine desktop-e2e package enablement
+  set_fact:
+    devbox_preinstall_desktop_e2e_enabled: "{{ devbox_preinstall_profile == 'desktop_e2e' }}"
+  tags: [devbox, preinstall]
+
+- name: Install core preinstall apt packages
+  apt:
+    name: "{{ devbox_preinstall_core_apt_packages }}"
+    state: present
+  when: devbox_preinstall_enabled | bool
+  tags: [devbox, preinstall, packages]
+
+- name: Install desktop-e2e apt packages
+  apt:
+    name: "{{ devbox_preinstall_desktop_e2e_apt_packages }}"
+    state: present
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_desktop_e2e_enabled | bool
+  tags: [devbox, preinstall, packages]
+
+- name: Check installed Node.js major version
+  command: node -p "process.versions.node.split('.')[0]"
+  register: devbox_preinstall_node_major_current
+  changed_when: false
+  failed_when: false
+  when: devbox_preinstall_enabled | bool
+  tags: [devbox, preinstall, node]
+
+- name: Bootstrap NodeSource repository for requested Node.js major
+  shell: "curl -fsSL https://deb.nodesource.com/setup_{{ devbox_preinstall_node_major }}.x | bash -"
+  args:
+    executable: /bin/bash
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_node_major_current.rc != 0 or devbox_preinstall_node_major_current.stdout | trim != devbox_preinstall_node_major
+  tags: [devbox, preinstall, node]
+
+- name: Install Node.js
+  apt:
+    name: nodejs
+    state: present
+  when: devbox_preinstall_enabled | bool
+  tags: [devbox, preinstall, node]
+
+- name: Enable corepack
+  command: corepack enable
+  changed_when: false
+  when: devbox_preinstall_enabled | bool
+  tags: [devbox, preinstall, node]
+
+- name: Check installed uv version
+  command: uv --version
+  register: devbox_preinstall_uv_current
+  changed_when: false
+  failed_when: false
+  when: devbox_preinstall_enabled | bool
+  tags: [devbox, preinstall, uv]
+
+- name: Install uv and uvx
+  shell: |
+    set -euo pipefail
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    curl -fsSL "https://github.com/astral-sh/uv/releases/download/{{ devbox_preinstall_uv_version }}/uv-x86_64-unknown-linux-gnu.tar.gz" -o "$tmpdir/uv.tar.gz"
+    tar -xzf "$tmpdir/uv.tar.gz" -C "$tmpdir"
+    install -m 0755 "$tmpdir"/uv-*/uv /usr/local/bin/uv
+    install -m 0755 "$tmpdir"/uv-*/uvx /usr/local/bin/uvx
+  args:
+    executable: /bin/bash
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_uv_current.rc != 0 or devbox_preinstall_uv_version not in devbox_preinstall_uv_current.stdout
+  tags: [devbox, preinstall, uv]
+
+- name: Install GitHub CLI apt repository keyring
+  get_url:
+    url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+    dest: /usr/share/keyrings/githubcli-archive-keyring.gpg
+    mode: "0644"
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_gh | bool
+  tags: [devbox, preinstall, gh]
+
+- name: Configure GitHub CLI apt repository
+  apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"
+    filename: github-cli
+    state: present
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_gh | bool
+  tags: [devbox, preinstall, gh]
+
+- name: Install GitHub CLI
+  apt:
+    name: gh
+    state: present
+    update_cache: yes
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_gh | bool
+  tags: [devbox, preinstall, gh]
+
+- name: Check installed AWS CLI
+  command: aws --version
+  register: devbox_preinstall_awscli_current
+  changed_when: false
+  failed_when: false
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_awscli | bool
+  tags: [devbox, preinstall, aws]
+
+- name: Install AWS CLI v2
+  shell: |
+    set -euo pipefail
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmpdir/awscliv2.zip"
+    unzip -q "$tmpdir/awscliv2.zip" -d "$tmpdir"
+    "$tmpdir/aws/install" --update
+  args:
+    executable: /bin/bash
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_awscli | bool
+    - devbox_preinstall_awscli_current.rc != 0
+  tags: [devbox, preinstall, aws]
+
+- name: Check installed kubectl version
+  command: kubectl version --client=true --output=yaml
+  register: devbox_preinstall_kubectl_current
+  changed_when: false
+  failed_when: false
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_kubectl | bool
+  tags: [devbox, preinstall, kubectl]
+
+- name: Install kubectl
+  get_url:
+    url: "https://dl.k8s.io/release/{{ devbox_preinstall_kubectl_version }}/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_kubectl | bool
+    - devbox_preinstall_kubectl_current.rc != 0 or devbox_preinstall_kubectl_version not in devbox_preinstall_kubectl_current.stdout
+  tags: [devbox, preinstall, kubectl]
+
+- name: Check installed coder CLI version
+  command: coder version
+  register: devbox_preinstall_coder_current
+  changed_when: false
+  failed_when: false
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_coder_cli | bool
+  tags: [devbox, preinstall, coder]
+
+- name: Install coder CLI
+  shell: |
+    set -euo pipefail
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    curl -fsSL "https://github.com/coder/coder/releases/download/v{{ devbox_preinstall_coder_version }}/coder_{{ devbox_preinstall_coder_version }}_linux_amd64.tar.gz" -o "$tmpdir/coder.tar.gz"
+    tar -xzf "$tmpdir/coder.tar.gz" -C "$tmpdir"
+    install -m 0755 "$tmpdir/coder" /usr/local/bin/coder
+  args:
+    executable: /bin/bash
+  when:
+    - devbox_preinstall_enabled | bool
+    - devbox_preinstall_install_coder_cli | bool
+    - devbox_preinstall_coder_current.rc != 0 or devbox_preinstall_coder_version not in devbox_preinstall_coder_current.stdout
+  tags: [devbox, preinstall, coder]

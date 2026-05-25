@@ -1,0 +1,7 @@
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+UsePAM yes
+PermitRootLogin {{ 'prohibit-password' if devbox_root_login_enabled else 'no' }}
+AllowUsers root {{ devbox_users | map(attribute='name') | join(' ') }}

@@ -1,0 +1,108 @@
+---
+- name: Ensure root SSH directory exists
+  file:
+    path: /root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [devbox, users, root]
+
+- name: Install root authorized keys
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ item }}"
+    state: present
+  loop: "{{ devbox_root_authorized_keys }}"
+  tags: [devbox, users, root]
+
+- name: Inspect root password aging state
+  command: chage -l root
+  register: devbox_root_password_aging
+  changed_when: false
+  tags: [devbox, users, root]
+
+- name: Clear forced password reset requirement for root
+  command: "chage -d {{ ansible_date_time.date }} root"
+  when: "'password must be changed' in devbox_root_password_aging.stdout"
+  tags: [devbox, users, root]
+
+- name: Ensure devbox users exist
+  user:
+    name: "{{ item.name }}"
+    shell: /bin/bash
+    create_home: true
+    groups: "{{ 'sudo' if (item.admin | default(false)) else omit }}"
+    append: yes
+    state: present
+  loop: "{{ devbox_users }}"
+  tags: [devbox, users]
+
+- name: Ensure devbox user SSH directories exist
+  file:
+    path: "/home/{{ item.name }}/.ssh"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ devbox_users }}"
+  tags: [devbox, users]
+
+- name: Install devbox user authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ item.0.name }}"
+    key: "{{ item.1 }}"
+    state: present
+  loop: "{{ devbox_users | subelements('ssh_public_keys', skip_missing=True) }}"
+  tags: [devbox, users]
+
+- name: Compute devbox admin user list
+  set_fact:
+    devbox_admin_users: "{{ devbox_users | selectattr('admin', 'defined') | selectattr('admin') | map(attribute='name') | list }}"
+  tags: [devbox, users, sudo]
+
+- name: Install passwordless sudoers for devbox admins
+  copy:
+    dest: /etc/sudoers.d/90-devbox-admins
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      {% for user in devbox_admin_users %}
+      {{ user }} ALL=(ALL) NOPASSWD:ALL
+      {% endfor %}
+  when: devbox_admin_users | length > 0
+  tags: [devbox, users, sudo]
+
+- name: Ensure SSH config drop-in directory exists
+  file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [devbox, users, ssh]
+
+- name: Configure SSH policy for devboxes
+  template:
+    src: sshd_config_devbox.conf.j2
+    dest: /etc/ssh/sshd_config.d/90-devbox.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart ssh
+  tags: [devbox, users, ssh]
+
+- name: Configure SSH pre-auth hardening for public devboxes
+  template:
+    src: sshd_config_preauth_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/95-devbox-preauth-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart ssh
+  tags: [devbox, users, ssh]
+
+- name: Validate complete SSH daemon configuration
+  command: /usr/sbin/sshd -t
+  changed_when: false
+  tags: [devbox, users, ssh]

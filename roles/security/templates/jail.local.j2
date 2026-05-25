@@ -1,0 +1,13 @@
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+port = {{ devbox_ssh_port }}
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 24h

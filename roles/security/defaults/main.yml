@@ -1,0 +1,7 @@
+---
+devbox_public_ports:
+  - { port: 22, proto: tcp, comment: "SSH" }
+
+devbox_ssh_port: 22
+devbox_proc_hidepid_enabled: true
+devbox_proc_hidepid_mode: 2

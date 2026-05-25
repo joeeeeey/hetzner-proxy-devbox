@@ -1,0 +1,4 @@
+inventory/host_vars/*.yml
+!inventory/host_vars/*.yml.example
+*.retry
+.DS_Store

@@ -1,0 +1,27 @@
+---
+devbox_base_packages:
+  - curl
+  - wget
+  - vim
+  - htop
+  - jq
+  - git
+  - sudo
+  - cron
+  - ufw
+  - fail2ban
+
+# Hetzner Cloud public IPv4 addresses are configured as /32 addresses with an
+# off-link gateway. Managed proxy hosts must not depend on DHCP renewal after
+# sing-box TUN autostart disables IPv6 egress.
+devbox_network_static_ipv4_enabled: "{{ transparent_proxy_enabled | default(false) | bool }}"
+devbox_network_interface: eth0
+devbox_network_static_ipv4_address: "{{ ansible_host | default(ansible_default_ipv4.address | default('')) }}"
+devbox_network_static_ipv4_netmask: 255.255.255.255
+devbox_network_static_ipv4_gateway: 172.31.1.1
+devbox_network_static_ipv4_dns_nameservers:
+  - 185.12.64.2
+  - 185.12.64.1
+devbox_network_disable_cloud_init: "{{ devbox_network_static_ipv4_enabled }}"
+devbox_network_cloud_init_disable_path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+devbox_network_interfaces_path: /etc/network/interfaces.d/50-cloud-init

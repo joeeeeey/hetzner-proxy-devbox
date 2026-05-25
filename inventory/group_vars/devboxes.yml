@@ -1,0 +1,49 @@
+---
+hcloud_location: ash
+hcloud_server_type: cx22
+hcloud_image: debian-12
+hcloud_backups: false
+hcloud_delete_protection: true
+hcloud_enable_ipv6: true
+hcloud_labels: {}
+
+devbox_ssh_port: 22
+devbox_base_packages:
+  - curl
+  - wget
+  - vim
+  - htop
+  - jq
+  - git
+  - sudo
+  - cron
+  - ufw
+  - fail2ban
+
+devbox_preinstall_enabled: true
+devbox_preinstall_profile: core
+
+transparent_proxy_enabled: true
+proxy_url: ""
+proxy_mode: socks5
+proxy_host: ""
+proxy_port: ""
+proxy_username: ""
+proxy_password: ""
+proxy_expected_egress_ip: ""
+proxy_allow_udp: false
+proxy_direct_private_traffic: true
+proxy_direct_extra_cidrs:
+  - 127.0.0.0/8
+  - 169.254.0.0/16
+proxy_direct_domain_suffixes:
+  - github.com
+  - githubusercontent.com
+  - githubassets.com
+proxy_enable_ipv6_egress: false
+proxy_enable_tun_ipv6: false
+proxy_enable_killswitch: false
+proxy_healthcheck_enabled: true
+
+devbox_public_ports:
+  - { port: 22, proto: tcp, comment: "SSH" }

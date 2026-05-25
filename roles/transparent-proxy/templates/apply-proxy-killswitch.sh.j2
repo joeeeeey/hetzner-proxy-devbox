@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+ENV_FILE="${1:-{{ proxy_env_path }}}"
+
+ensure_root
+require_commands nft jq getent awk
+load_env_file "$ENV_FILE"
+
+: "${PROXY_HOST:?PROXY_HOST is required}"
+: "${PROXY_PORT:?PROXY_PORT is required}"
+: "${SSH_PORT:=22}"
+
+PROXY_IP="$(resolve_ipv4 "$PROXY_HOST")"
+ADMIN_IPS_JSON="$(json_list_from_value "${ADMIN_IPS:-}")"
+EXTRA_CIDRS_JSON="$(json_list_from_value "${DIRECT_EXTRA_CIDRS:-$(default_direct_extra_cidrs)}")"
+
+NFT_FILE="{{ proxy_killswitch_nft_path }}"
+
+jq -nr \
+  --arg proxy_ip "$PROXY_IP" \
+  --arg proxy_port "$PROXY_PORT" \
+  --arg proxy_mode "${PROXY_MODE:-socks5}" \
+  --arg proxy_allow_udp "${PROXY_ALLOW_UDP:-no}" \
+  --arg ssh_port "${SSH_PORT:-22}" \
+  --arg direct_private "${DIRECT_PRIVATE_TRAFFIC:-yes}" \
+  --argjson admin_ips "$ADMIN_IPS_JSON" \
+  --argjson extra_cidrs "$EXTRA_CIDRS_JSON" \
+  '
+  def enabled($v): ($v | ascii_downcase) as $s | ($s == "1" or $s == "true" or $s == "yes" or $s == "on");
+  def lines:
+    [
+      "table inet transparent_proxy_killswitch {",
+      "  chain output {",
+      "    type filter hook output priority 0; policy accept;",
+      "    ct state established,related accept",
+      "    oifname \"lo\" accept",
+      "    ip daddr " + $proxy_ip + " tcp dport " + $proxy_port + " accept"
+    ]
+    + (if $proxy_mode == "socks5" and enabled($proxy_allow_udp) then
+        ["    ip daddr " + $proxy_ip + " udp dport " + $proxy_port + " accept"]
+      else
+        []
+      end)
+    + [ $admin_ips[]? | "    ip daddr " + . + " tcp dport " + $ssh_port + " accept" ]
+    + (if enabled($direct_private) then
+        [
+          "    ip daddr 10.0.0.0/8 accept",
+          "    ip daddr 172.16.0.0/12 accept",
+          "    ip daddr 192.168.0.0/16 accept"
+        ]
+      else
+        []
+      end)
+    + [ $extra_cidrs[]? | "    ip daddr " + . + " accept" ]
+    + [
+      "    reject with icmpx type admin-prohibited",
+      "  }",
+      "}"
+    ];
+  lines[]' >"$NFT_FILE"
+
+nft delete table inet transparent_proxy_killswitch >/dev/null 2>&1 || true
+nft -f "$NFT_FILE"
+
+echo "Installed experimental kill switch from $ENV_FILE"

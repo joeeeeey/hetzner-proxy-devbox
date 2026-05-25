@@ -1,0 +1,14 @@
+[Unit]
+Description=Verify transparent proxy transparent routing health
+Documentation=file:/etc/sing-box/proxy-bootstrap.md
+Wants=network-online.target
+After=network-online.target sing-box.service
+ConditionPathExists={{ proxy_verify_script_path }}
+ConditionPathExists={{ proxy_env_path }}
+
+[Service]
+Type=oneshot
+ExecStart={{ proxy_timer_wrapper_script_path }}
+SyslogIdentifier=verify-transparent-proxy
+StandardOutput=journal
+StandardError=journal

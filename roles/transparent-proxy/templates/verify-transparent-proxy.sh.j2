@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  exec sudo "$0" "$@"
+fi
+
+env_file="{{ proxy_env_path }}"
+expected_ip=""
+udp_host="1.1.1.1"
+udp_port="12345"
+dns_name="example.com"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo verify-transparent-proxy [--expected-ip <ip>] [--dns-name <domain>] [--udp-host <ip>] [--udp-port <port>]
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expected-ip) expected_ip="${2:-}"; shift 2 ;;
+    --dns-name) dns_name="${2:-}"; shift 2 ;;
+    --udp-host) udp_host="${2:-}"; shift 2 ;;
+    --udp-port) udp_port="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [[ ! -r "$env_file" ]]; then
+  echo "Cannot read env file: $env_file" >&2
+  exit 1
+fi
+
+set -a
+source "$env_file"
+set +a
+
+expected_ip="${expected_ip:-${PROXY_EXPECTED_EGRESS_IP:-}}"
+proxy_mode="$(printf '%s' "${PROXY_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+proxy_allow_udp="$(printf '%s' "${PROXY_ALLOW_UDP:-no}" | tr '[:upper:]' '[:lower:]')"
+
+if [[ -z "$expected_ip" ]]; then
+  echo "Expected IP is empty. Pass --expected-ip or set PROXY_EXPECTED_EGRESS_IP in $env_file" >&2
+  exit 1
+fi
+
+if ! [[ "$udp_port" =~ ^[0-9]+$ ]]; then
+  echo "UDP port must be numeric: $udp_port" >&2
+  exit 1
+fi
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+pass() { echo "PASS: $*"; }
+
+service_state="$(systemctl is-active sing-box || true)"
+[[ "$service_state" == "active" ]] || fail "sing-box.service is not active (got: $service_state)"
+pass "sing-box.service is active"
+
+egress_ip="$(curl -4 -fsS https://ipv4.icanhazip.com | tr -d '\r\n')"
+[[ "$egress_ip" == "$expected_ip" ]] || fail "icanhazip mismatch: expected $expected_ip, got $egress_ip"
+pass "icanhazip egress IP matches expected IP $expected_ip"
+
+trace_ip="$(curl -4 -fsS https://cloudflare.com/cdn-cgi/trace | awk -F= '$1 == "ip" {print $2}' | tr -d '\r\n')"
+[[ "$trace_ip" == "$expected_ip" ]] || fail "cloudflare trace mismatch: expected $expected_ip, got $trace_ip"
+pass "cloudflare trace IP matches expected IP $expected_ip"
+
+dns_answer="$(dig +short A "$dns_name" | sed '/^$/d')"
+[[ -n "$dns_answer" ]] || fail "DNS resolution returned no A records for $dns_name"
+pass "DNS resolution returned A records for $dns_name"
+
+route_2022="$(ip route show table 2022 || true)"
+printf '%s\n' "$route_2022" | grep -q 'default via 172\.19\.0\.2 dev singtun0' || fail "table 2022 does not route default traffic via singtun0"
+pass "policy route table 2022 points default traffic to singtun0"
+
+nft_rules="$(nft list ruleset 2>/dev/null || true)"
+printf '%s\n' "$nft_rules" | grep -q 'table inet sing-box' || fail "nftables sing-box table is missing"
+printf '%s\n' "$nft_rules" | grep -q 'dport 53' || fail "DNS hijack rules were not found in nftables"
+pass "nftables sing-box table and DNS hijack rules exist"
+
+ssh_port="${SSH_PORT:-{{ proxy_ssh_port }}}"
+{% if proxy_ssh_bypass_enabled %}
+nft list table inet ssh_mgmt_bypass >/dev/null 2>&1 \
+  || fail "nftables SSH management bypass table is missing"
+nft list table inet ssh_mgmt_bypass | grep -q "dport $ssh_port" \
+  || fail "SSH management bypass table does not mark destination port $ssh_port"
+nft list table inet ssh_mgmt_bypass | grep -q "sport $ssh_port" \
+  || fail "SSH management bypass table does not mark source port $ssh_port"
+pass "nftables SSH management bypass table exists for TCP/$ssh_port"
+{% else %}
+echo "WARN: nftables SSH management bypass assertion skipped because proxy_ssh_bypass_enabled=false."
+{% endif %}
+
+config_json="{{ proxy_config_path }}"
+if [[ -r "$config_json" ]]; then
+  jq -e --argjson ssh_port "$ssh_port" '
+    .route.rules
+    | any(.action == "bypass" and (.network // [] | index("tcp")) and (.port // [] | index($ssh_port)))
+  ' "$config_json" >/dev/null || fail "sing-box config is missing TCP destination port $ssh_port bypass for SSH"
+  jq -e --argjson ssh_port "$ssh_port" '
+    .route.rules
+    | any(.action == "bypass" and (.network // [] | index("tcp")) and (.source_port // [] | index($ssh_port)))
+  ' "$config_json" >/dev/null || fail "sing-box config is missing TCP source port $ssh_port bypass for SSH replies"
+  pass "TCP/$ssh_port ingress and reply traffic bypass sing-box proxy routing"
+else
+  fail "sing-box config is not readable: $config_json"
+fi
+
+before_logs="$(mktemp)"
+after_logs="$(mktemp)"
+trap 'rm -f "$before_logs" "$after_logs"' EXIT
+
+journalctl -u sing-box --no-pager -n 120 --output cat > "$before_logs"
+bash -lc "printf 'verify-transparent-proxy\n' > /dev/udp/$udp_host/$udp_port"
+sleep 1
+journalctl -u sing-box --no-pager -n 160 --output cat > "$after_logs"
+
+if [[ "$proxy_mode" == "socks5" && "$proxy_allow_udp" == "yes" ]]; then
+  grep -q "outbound/socks\\[proxy\\]: outbound packet connection to $udp_host:$udp_port" "$after_logs" \
+    || fail "UDP probe was not observed exiting via outbound/socks[proxy] to $udp_host:$udp_port"
+  pass "UDP probe was observed in sing-box logs via outbound/socks[proxy]"
+else
+  echo "WARN: UDP proxy assertion skipped because PROXY_MODE=$proxy_mode and PROXY_ALLOW_UDP=$proxy_allow_udp."
+fi
+
+echo
+echo "Verification summary:"
+echo "  Expected egress IP: $expected_ip"
+echo "  Observed egress IP: $egress_ip"
+echo "  Proxy mode: $proxy_mode"
+echo "  DNS name checked: $dns_name"
+echo "  UDP probe target: $udp_host:$udp_port"

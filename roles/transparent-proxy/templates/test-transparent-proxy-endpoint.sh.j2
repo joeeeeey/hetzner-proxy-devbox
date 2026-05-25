@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+ENV_FILE="${1:-{{ proxy_env_path }}}"
+expected_ip=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo test-transparent-proxy-endpoint [env-file] --expected-ip <proxy-egress-ip>
+
+This checks the upstream proxy directly before transparent routing is enabled.
+The expected IP is the proxy provider's fixed egress IP, not the Hetzner VM IPv4.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${2:-}" == "--expected-ip" ]]; then
+  expected_ip="${3:-}"
+elif [[ "${1:-}" == "--expected-ip" ]]; then
+  ENV_FILE="{{ proxy_env_path }}"
+  expected_ip="${2:-}"
+fi
+
+if [[ -z "$expected_ip" ]]; then
+  usage >&2
+  exit 1
+fi
+
+require_commands curl tr
+load_env_file "$ENV_FILE"
+
+: "${PROXY_MODE:?PROXY_MODE is required}"
+: "${PROXY_HOST:?PROXY_HOST is required}"
+: "${PROXY_PORT:?PROXY_PORT is required}"
+: "${PROXY_USERNAME:?PROXY_USERNAME is required}"
+: "${PROXY_PASSWORD:?PROXY_PASSWORD is required}"
+
+proxy_mode="$(printf '%s' "$PROXY_MODE" | tr '[:upper:]' '[:lower:]')"
+
+case "$proxy_mode" in
+  socks5)
+    observed_ip="$(
+      curl -4 -fsS \
+        --proxy "socks5h://$PROXY_HOST:$PROXY_PORT" \
+        --proxy-user "$PROXY_USERNAME:$PROXY_PASSWORD" \
+        https://ipv4.icanhazip.com
+    )"
+    ;;
+  http)
+    observed_ip="$(
+      curl -4 -fsS \
+        -x "http://$PROXY_HOST:$PROXY_PORT" \
+        --proxy-user "$PROXY_USERNAME:$PROXY_PASSWORD" \
+        https://ipv4.icanhazip.com
+    )"
+    ;;
+  *)
+    echo "Unsupported PROXY_MODE: $PROXY_MODE" >&2
+    exit 1
+    ;;
+esac
+
+observed_ip="$(printf '%s' "$observed_ip" | tr -d '\r\n')"
+
+if [[ "$observed_ip" != "$expected_ip" ]]; then
+  echo "Proxy endpoint egress IP mismatch: expected $expected_ip, got $observed_ip" >&2
+  exit 1
+fi
+
+echo "Proxy endpoint OK: $observed_ip"

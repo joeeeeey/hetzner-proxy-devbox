@@ -1,0 +1,8 @@
+---
+devbox_root_login_enabled: true
+devbox_ssh_port: 22
+devbox_sshd_login_grace_time: 30
+devbox_sshd_max_startups: "100:30:200"
+devbox_sshd_use_dns: "no"
+devbox_root_authorized_keys: []
+devbox_users: []

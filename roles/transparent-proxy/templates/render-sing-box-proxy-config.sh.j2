@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+ENV_FILE="${1:-{{ proxy_env_path }}}"
+
+require_commands jq getent awk sed tr
+load_env_file "$ENV_FILE"
+
+: "${PROXY_MODE:?PROXY_MODE is required}"
+: "${PROXY_HOST:?PROXY_HOST is required}"
+: "${PROXY_PORT:?PROXY_PORT is required}"
+: "${PROXY_USERNAME:?PROXY_USERNAME is required}"
+: "${PROXY_PASSWORD:?PROXY_PASSWORD is required}"
+
+if [[ "$PROXY_MODE" != "socks5" && "$PROXY_MODE" != "http" ]]; then
+  echo "PROXY_MODE must be socks5 or http" >&2
+  exit 1
+fi
+
+SINGBOX_LOG_LEVEL="${SINGBOX_LOG_LEVEL:-{{ proxy_singbox_log_level }}}"
+DNS_SERVER_IP="${DNS_SERVER_IP:-{{ proxy_dns_server_ip }}}"
+DNS_SERVER_PORT="${DNS_SERVER_PORT:-{{ proxy_dns_server_port }}}"
+DNS_TLS_SERVER_NAME="${DNS_TLS_SERVER_NAME:-{{ proxy_dns_tls_server_name }}}"
+DIRECT_PRIVATE_TRAFFIC="${DIRECT_PRIVATE_TRAFFIC:-{% if proxy_direct_private_traffic %}yes{% else %}no{% endif %}}"
+DIRECT_EXTRA_CIDRS="${DIRECT_EXTRA_CIDRS:-$(default_direct_extra_cidrs)}"
+PROXY_ALLOW_UDP="${PROXY_ALLOW_UDP:-{% if proxy_allow_udp %}yes{% else %}no{% endif %}}"
+ENABLE_IPV6_EGRESS="${ENABLE_IPV6_EGRESS:-{% if proxy_enable_ipv6_egress %}yes{% else %}no{% endif %}}"
+ENABLE_TUN_IPV6="${ENABLE_TUN_IPV6:-{% if proxy_enable_tun_ipv6 %}yes{% else %}no{% endif %}}"
+TUN_INTERFACE_NAME="${TUN_INTERFACE_NAME:-{{ proxy_tun_interface_name }}}"
+TUN_IPV4_CIDR="${TUN_IPV4_CIDR:-{{ proxy_tun_ipv4_cidr }}}"
+TUN_IPV6_CIDR="${TUN_IPV6_CIDR:-{{ proxy_tun_ipv6_cidr }}}"
+ADMIN_IPS="${ADMIN_IPS:-}"
+
+PROXY_IP="$(resolve_ipv4 "$PROXY_HOST")"
+if [[ -z "$PROXY_IP" ]]; then
+  echo "Failed to resolve PROXY_HOST=$PROXY_HOST" >&2
+  exit 1
+fi
+
+ADMIN_IPS_JSON="$(json_list_from_value "$ADMIN_IPS")"
+DIRECT_EXTRA_CIDRS_JSON="$(json_list_from_value "$DIRECT_EXTRA_CIDRS")"
+
+jq -n \
+  --arg log_level "$SINGBOX_LOG_LEVEL" \
+  --arg proxy_mode "$PROXY_MODE" \
+  --arg proxy_ip "$PROXY_IP" \
+  --arg proxy_port "$PROXY_PORT" \
+  --arg proxy_username "$PROXY_USERNAME" \
+  --arg proxy_password "$PROXY_PASSWORD" \
+  --arg proxy_allow_udp "$PROXY_ALLOW_UDP" \
+  --arg dns_ip "$DNS_SERVER_IP" \
+  --arg dns_port "$DNS_SERVER_PORT" \
+  --arg dns_sni "$DNS_TLS_SERVER_NAME" \
+  --arg direct_private "$DIRECT_PRIVATE_TRAFFIC" \
+  --arg enable_ipv6 "$ENABLE_IPV6_EGRESS" \
+  --arg enable_tun_ipv6 "$ENABLE_TUN_IPV6" \
+  --arg tun_if "$TUN_INTERFACE_NAME" \
+  --arg tun_ipv4 "$TUN_IPV4_CIDR" \
+  --arg tun_ipv6 "$TUN_IPV6_CIDR" \
+  --argjson admin_ips "$ADMIN_IPS_JSON" \
+  --argjson direct_extra_cidrs "$DIRECT_EXTRA_CIDRS_JSON" \
+  --argjson direct_domains '[
+{% for domain in proxy_direct_domain_suffixes %}
+    "{{ domain }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+  ]' \
+  '
+  def enabled($v): ($v | ascii_downcase) as $s | ($s == "1" or $s == "true" or $s == "yes" or $s == "on");
+  def tun_addrs($ipv4; $enable_tun_ipv6; $ipv6):
+    [$ipv4] + (if enabled($enable_tun_ipv6) then [$ipv6] else [] end);
+  def proxy_outbound($mode; $ip; $port; $username; $password; $allow_udp):
+    if $mode == "socks5" then
+      ({
+        type: "socks",
+        tag: "proxy",
+        server: $ip,
+        server_port: ($port | tonumber),
+        version: "5",
+        username: $username,
+        password: $password
+      } + (if enabled($allow_udp) then {} else {network: "tcp"} end))
+    else
+      {
+        type: "http",
+        tag: "proxy",
+        server: $ip,
+        server_port: ($port | tonumber),
+        username: $username,
+        password: $password
+      }
+    end;
+  def admin_rules($ips; $ssh_port):
+    [ $ips[]? | {
+      ip_cidr: [(. + "/32")],
+      port: [($ssh_port | tonumber)],
+      network: ["tcp"],
+      action: "route",
+      outbound: "direct"
+    } ];
+  def ssh_management_rules($ssh_port):
+    [
+      {
+        port: [($ssh_port | tonumber)],
+        network: ["tcp"],
+        action: "bypass",
+        outbound: "direct"
+      },
+      {
+        source_port: [($ssh_port | tonumber)],
+        network: ["tcp"],
+        action: "bypass",
+        outbound: "direct"
+      }
+    ];
+  def direct_extra_rules($cidrs):
+    [ $cidrs[]? | {
+      ip_cidr: [.],
+      action: "route",
+      outbound: "direct"
+    } ];
+  def private_rules($enabled_flag):
+    if enabled($enabled_flag) then
+      [{ ip_is_private: true, action: "route", outbound: "direct" }]
+    else
+      []
+    end;
+  def udp_rules($allow_udp):
+    if enabled($allow_udp) then [] else [{ network: ["udp"], action: "reject" }] end;
+  def ipv6_rules($enable_ipv6):
+    if enabled($enable_ipv6) then [] else [{ ip_version: 6, action: "reject" }] end;
+
+  {
+    log: {
+      level: $log_level,
+      timestamp: true
+    },
+    dns: {
+      servers: [
+        {
+          type: "tls",
+          tag: "dot-primary",
+          server: $dns_ip,
+          server_port: ($dns_port | tonumber),
+          tls: {
+            enabled: true,
+            server_name: $dns_sni
+          },
+          detour: "proxy"
+        }
+      ],
+      rules: [
+        {
+          action: "route",
+          server: "dot-primary"
+        }
+      ],
+      final: "dot-primary",
+      strategy: "ipv4_only",
+      independent_cache: true
+    },
+    inbounds: [
+      {
+        type: "tun",
+        tag: "tun-in",
+        interface_name: $tun_if,
+        address: tun_addrs($tun_ipv4; $enable_tun_ipv6; $tun_ipv6),
+        auto_route: true,
+        iproute2_table_index: 2022,
+        iproute2_rule_index: 9000,
+        auto_redirect: true,
+        strict_route: true,
+        stack: "system"
+      }
+    ],
+    outbounds: [
+      proxy_outbound($proxy_mode; $proxy_ip; $proxy_port; $proxy_username; $proxy_password; $proxy_allow_udp),
+      { type: "direct", tag: "direct" },
+      { type: "block", tag: "block" }
+    ],
+    route: {
+      auto_detect_interface: true,
+      rules:
+        ([{ port: [53], action: "hijack-dns" }]
+        + ssh_management_rules("{{ proxy_ssh_port }}")
+        + [{
+            domain_suffix: $direct_domains,
+            action: "route",
+            outbound: "direct"
+          }]
+        + admin_rules($admin_ips; "{{ proxy_ssh_port }}")
+        + [{ ip_cidr: [($proxy_ip + "/32")], action: "bypass", outbound: "direct" }]
+        + private_rules($direct_private)
+        + direct_extra_rules($direct_extra_cidrs)
+        + ipv6_rules($enable_ipv6)
+        + udp_rules($proxy_allow_udp)),
+      final: "proxy"
+    }
+  }'

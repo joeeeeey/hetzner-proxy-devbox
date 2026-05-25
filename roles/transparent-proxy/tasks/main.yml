@@ -1,0 +1,357 @@
+---
+- name: Assert transparent proxy inputs are complete
+  assert:
+    that:
+      - transparent_proxy_enabled | bool
+      - proxy_mode in ['socks5', 'http']
+      - proxy_host | length > 0
+      - proxy_port | string | length > 0
+      - proxy_username | length > 0
+      - proxy_password | length > 0
+      - proxy_expected_egress_ip | length > 0
+    fail_msg: >-
+      Transparent proxy requires mode, host, port, username, password, and
+      expected egress IP from the proxy provider.
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Ensure apt keyring directory exists for sing-box
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install sing-box repository key
+  get_url:
+    url: "{{ proxy_sagernet_key_url }}"
+    dest: "{{ proxy_sagernet_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install sing-box repository source
+  copy:
+    dest: "{{ proxy_sagernet_sources_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://deb.sagernet.org/
+      Suites: *
+      Components: *
+      Enabled: yes
+      Signed-By: {{ proxy_sagernet_key_path }}
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install sing-box and proxy verification packages
+  apt:
+    name: "{{ proxy_packages }}"
+    state: present
+    update_cache: yes
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Ensure /etc/sing-box exists
+  file:
+    path: /etc/sing-box
+    state: directory
+    owner: root
+    group: sing-box
+    mode: "0750"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Ensure support directories exist for proxy tooling
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ proxy_support_root }}", mode: "0755" }
+    - { path: "{{ proxy_support_root }}/env", mode: "0755" }
+    - { path: "{{ proxy_support_root }}/experimental", mode: "0755" }
+    - { path: /etc/transparent-proxy, mode: "0700" }
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Ensure nftables include directory exists for SSH management bypass
+  file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - transparent_proxy_enabled | bool
+    - proxy_ssh_bypass_enabled | bool
+  tags: [devbox, proxy, ssh]
+
+- name: Install proxy env file
+  template:
+    src: transparent-proxy.env.j2
+    dest: "{{ proxy_env_path }}"
+    owner: root
+    group: sing-box
+    mode: "0640"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install SSH management bypass nft rules
+  template:
+    src: ssh-mgmt-bypass.nft.j2
+    dest: "{{ proxy_ssh_bypass_nft_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - transparent_proxy_enabled | bool
+    - proxy_ssh_bypass_enabled | bool
+  tags: [devbox, proxy, ssh]
+
+- name: Install SSH management bypass helper
+  template:
+    src: ssh-mgmt-bypass.sh.j2
+    dest: "{{ proxy_ssh_bypass_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - transparent_proxy_enabled | bool
+    - proxy_ssh_bypass_enabled | bool
+  tags: [devbox, proxy, ssh]
+
+- name: Install SSH management bypass service
+  template:
+    src: ssh-mgmt-bypass.service.j2
+    dest: "{{ proxy_ssh_bypass_service_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - transparent_proxy_enabled | bool
+    - proxy_ssh_bypass_enabled | bool
+  tags: [devbox, proxy, ssh]
+
+- name: Install render-sing-box-proxy-config
+  template:
+    src: render-sing-box-proxy-config.sh.j2
+    dest: "{{ proxy_render_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install common proxy helper library
+  template:
+    src: common.sh.j2
+    dest: "{{ proxy_common_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install apply-transparent-proxy
+  template:
+    src: apply-transparent-proxy.sh.j2
+    dest: "{{ proxy_apply_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install update-transparent-proxy-endpoint
+  template:
+    src: update-transparent-proxy-endpoint.sh.j2
+    dest: "{{ proxy_update_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install test-transparent-proxy-endpoint
+  template:
+    src: test-transparent-proxy-endpoint.sh.j2
+    dest: "{{ proxy_preflight_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install verify-transparent-proxy
+  template:
+    src: verify-transparent-proxy.sh.j2
+    dest: "{{ proxy_verify_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install check-dns-proxy
+  template:
+    src: check-dns-proxy.sh.j2
+    dest: "{{ proxy_check_dns_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install user-visible verify-transparent-proxy symlink
+  file:
+    src: "{{ proxy_verify_script_path }}"
+    dest: "{{ proxy_verify_user_link_path }}"
+    state: link
+    owner: root
+    group: root
+    force: true
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install user-visible check-dns-proxy symlink
+  file:
+    src: "{{ proxy_check_dns_script_path }}"
+    dest: "{{ proxy_check_dns_user_link_path }}"
+    state: link
+    owner: root
+    group: root
+    force: true
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install rollback-transparent-proxy
+  template:
+    src: rollback-transparent-proxy.sh.j2
+    dest: "{{ proxy_rollback_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install run-transparent-proxy-check
+  template:
+    src: run-transparent-proxy-check.sh.j2
+    dest: "{{ proxy_timer_wrapper_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install verify-transparent-proxy service
+  template:
+    src: verify-transparent-proxy.service.j2
+    dest: "{{ proxy_verify_service_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install proxy bootstrap reference markdown
+  template:
+    src: proxy-bootstrap.md.j2
+    dest: /etc/sing-box/proxy-bootstrap.md
+    owner: root
+    group: root
+    mode: "0644"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install experimental kill switch apply script
+  template:
+    src: apply-proxy-killswitch.sh.j2
+    dest: "{{ proxy_killswitch_apply_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install experimental kill switch clear script
+  template:
+    src: clear-proxy-killswitch.sh.j2
+    dest: "{{ proxy_killswitch_clear_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install experimental kill switch service
+  template:
+    src: transparent-proxy-killswitch.service.j2
+    dest: "{{ proxy_killswitch_service_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install verify-transparent-proxy timer
+  template:
+    src: verify-transparent-proxy.timer.j2
+    dest: "{{ proxy_verify_timer_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Enable SSH management bypass before relying on TUN autostart
+  systemd:
+    name: ssh-mgmt-bypass.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - transparent_proxy_enabled | bool
+    - proxy_ssh_bypass_enabled | bool
+  tags: [devbox, proxy, ssh]
+
+- name: Verify proxy endpoint before installing transparent routing
+  command: "{{ proxy_preflight_script_path }} {{ proxy_env_path }} --expected-ip {{ proxy_expected_egress_ip }}"
+  changed_when: false
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Apply transparent proxy configuration
+  command: "{{ proxy_apply_script_path }} {{ proxy_env_path }}"
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Enable verify-transparent-proxy timer
+  systemd:
+    name: verify-transparent-proxy.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - transparent_proxy_enabled | bool
+    - proxy_healthcheck_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Ensure transparent-proxy-killswitch service is in the desired state
+  systemd:
+    name: transparent-proxy-killswitch.service
+    enabled: "{{ proxy_enable_killswitch | bool }}"
+    state: "{{ 'started' if proxy_enable_killswitch else 'stopped' }}"
+    daemon_reload: true
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]

@@ -1,0 +1,58 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: [devbox, base, packages]
+
+- name: Install devbox base packages
+  apt:
+    name: "{{ devbox_base_packages }}"
+    state: present
+  tags: [devbox, base, packages]
+
+- name: Set timezone to UTC
+  timezone:
+    name: UTC
+  tags: [devbox, base]
+
+- name: Assert static IPv4 inputs are available when enabled
+  assert:
+    that:
+      - devbox_network_static_ipv4_address | length > 0
+      - devbox_network_static_ipv4_gateway | length > 0
+      - devbox_network_static_ipv4_dns_nameservers | length > 0
+    fail_msg: >-
+      Static Hetzner IPv4 networking is enabled, but the IPv4 address,
+      gateway, or DNS nameservers are missing.
+  when: devbox_network_static_ipv4_enabled | bool
+  tags: [devbox, base, network]
+
+- name: Disable cloud-init network regeneration for static IPv4 hosts
+  copy:
+    dest: "{{ devbox_network_cloud_init_disable_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible.
+      # Keep Hetzner devbox networking stable under sing-box TUN autostart.
+      network: {config: disabled}
+  when: devbox_network_disable_cloud_init | bool
+  tags: [devbox, base, network]
+
+- name: Render static Hetzner IPv4 interface config
+  template:
+    src: hetzner-static-ipv4.interfaces.j2
+    dest: "{{ devbox_network_interfaces_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: devbox_network_static_ipv4_enabled | bool
+  tags: [devbox, base, network]
+
+- name: Validate static Hetzner IPv4 interface config
+  command: "ifup --no-act {{ devbox_network_interface }}"
+  changed_when: false
+  when: devbox_network_static_ipv4_enabled | bool
+  tags: [devbox, base, network]

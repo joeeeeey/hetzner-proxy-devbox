@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-apply}" in
+  apply)
+    nft delete table inet ssh_mgmt_bypass 2>/dev/null || true
+    nft -f {{ proxy_ssh_bypass_nft_path }}
+    ;;
+  clear)
+    nft delete table inet ssh_mgmt_bypass 2>/dev/null || true
+    ;;
+  status)
+    nft list table inet ssh_mgmt_bypass
+    ;;
+  *)
+    echo "Usage: $0 [apply|clear|status]" >&2
+    exit 2
+    ;;
+esac

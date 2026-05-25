@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=./common.sh
+source "{{ proxy_common_script_path }}"
+
+ensure_root
+require_commands systemctl install rm sysctl
+
+systemctl disable --now transparent-proxy-killswitch.service >/dev/null 2>&1 || true
+if command -v {{ proxy_killswitch_clear_path }} >/dev/null 2>&1; then
+  {{ proxy_killswitch_clear_path }} >/dev/null 2>&1 || true
+fi
+
+systemctl disable --now sing-box >/dev/null 2>&1 || true
+
+if [[ -f {{ proxy_config_dist_path }} ]]; then
+  install -m 0600 {{ proxy_config_dist_path }} {{ proxy_config_path }}
+fi
+
+rm -f /etc/sysctl.d/90-transparent-proxy-ipv6.conf
+sysctl --system >/dev/null 2>&1 || true
+
+cat <<'EOF'
+Rollback completed.
+
+If you want the packaged sing-box baseline back online:
+  sudo systemctl start sing-box
+
+If you want the transparent proxy back:
+  sudo /usr/local/sbin/apply-transparent-proxy /etc/sing-box/transparent-proxy.env
+EOF

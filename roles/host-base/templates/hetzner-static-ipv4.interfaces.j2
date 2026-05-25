@@ -1,0 +1,10 @@
+# Managed by Ansible.
+# Hetzner Cloud assigns the public IPv4 as /32 and uses an off-link gateway.
+# Static IPv4 avoids DHCP lease expiry breaking SSH while sing-box TUN is active.
+auto {{ devbox_network_interface }}
+iface {{ devbox_network_interface }} inet static
+    address {{ devbox_network_static_ipv4_address }}
+    netmask {{ devbox_network_static_ipv4_netmask }}
+    pointopoint {{ devbox_network_static_ipv4_gateway }}
+    gateway {{ devbox_network_static_ipv4_gateway }}
+    dns-nameservers {{ devbox_network_static_ipv4_dns_nameservers | join(' ') }}

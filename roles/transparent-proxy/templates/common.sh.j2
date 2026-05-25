@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bool_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run as root: sudo $0 $*" >&2
+    exit 1
+  fi
+}
+
+require_commands() {
+  local missing=0
+  local cmd
+  for cmd in "$@"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "Missing command: $cmd" >&2
+      missing=1
+    fi
+  done
+  if [[ "$missing" -ne 0 ]]; then
+    exit 1
+  fi
+}
+
+load_env_file() {
+  local env_file="${1:?env file required}"
+  if [[ ! -r "$env_file" ]]; then
+    echo "Env file not readable: $env_file" >&2
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file"
+  set +a
+}
+
+resolve_ipv4() {
+  local host="${1:?host required}"
+  getent ahostsv4 "$host" | awk 'NR==1{print $1}'
+}
+
+json_list_from_value() {
+  local raw="${1:-}"
+  printf '%s' "$raw" \
+    | tr ', \t' '\n\n\n' \
+    | sed '/^$/d' \
+    | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+default_direct_extra_cidrs() {
+  printf '%s' "127.0.0.0/8 169.254.0.0/16"
+}

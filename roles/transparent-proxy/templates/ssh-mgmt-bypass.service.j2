@@ -1,0 +1,16 @@
+[Unit]
+Description=Keep SSH management traffic direct before sing-box TUN
+Documentation=file:{{ proxy_ssh_bypass_nft_path }}
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service
+Before=network-pre.target network.target sing-box.service ssh.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ proxy_ssh_bypass_script_path }} apply
+ExecStop={{ proxy_ssh_bypass_script_path }} clear
+
+[Install]
+WantedBy=multi-user.target

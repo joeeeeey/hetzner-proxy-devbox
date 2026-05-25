@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if output="$({{ proxy_verify_script_path }} 2>&1)"; then
+  echo "[verify-transparent-proxy] success"
+  printf '%s\n' "$output"
+else
+  status=$?
+  echo "[verify-transparent-proxy] failure" >&2
+  printf '%s\n' "$output" >&2
+  exit "$status"
+fi

@@ -1,0 +1,32 @@
+# Transparent Proxy Bootstrap
+
+This host routes normal outbound traffic through sing-box TUN to a user-provided
+SOCKS5 or HTTP proxy endpoint.
+
+Important distinction:
+
+- Hetzner VM IPv4: used for SSH and initial bootstrap.
+- Proxy egress IP: the fixed IP from the proxy provider, used for outbound traffic.
+
+Configured proxy:
+
+- mode: {{ proxy_mode }}
+- endpoint: {{ proxy_host }}:{{ proxy_port }}
+- expected egress IP: {{ proxy_expected_egress_ip }}
+
+Direct-routing defaults:
+{% for domain in proxy_direct_domain_suffixes %}
+- {{ domain }}
+{% endfor %}
+- private IP traffic when `proxy_direct_private_traffic=true`
+- TCP/{{ proxy_ssh_port }} ingress and reply traffic by port
+
+Operational commands:
+
+- `/usr/local/bin/verify-transparent-proxy`
+- `/usr/local/bin/check-dns-proxy`
+- `sudo {{ proxy_update_script_path }} --mode socks5 --host <host> --port <port> --expected-ip <ip> --username <user> --password <password>`
+- `sudo {{ proxy_rollback_script_path }}`
+
+The proxy endpoint is tested directly before transparent routing is applied.
+The observed direct-proxy egress IP must match `{{ proxy_expected_egress_ip }}`.
