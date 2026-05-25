@@ -162,15 +162,9 @@ Any failed required check exits non-zero. It checks:
 - SSH TCP/22 ingress and reply traffic bypass the TUN/proxy path in config and nftables
 - UDP proxying is strictly checked when `proxy_allow_udp=true`
 
-For manual debugging where you want a full status report without a failing exit
-code:
-
-```bash
-verify-global-proxy --no-fail
-```
-
-The command still prints every `PASS` and `FAIL`; `--no-fail` only changes the
-final exit code.
+For manual debugging, run the same command directly on the VM. It prints every
+`PASS` and `FAIL` before returning its final exit code, so the status report is
+visible even when the command exits non-zero.
 
 For DNS-specific validation:
 

@@ -14,7 +14,6 @@ dns_name="example.com"
 udp_host="1.1.1.1"
 udp_port="12345"
 strict_udp="auto"
-fail_on_error=1
 
 passed=0
 failed=0
@@ -23,12 +22,11 @@ declare -a failures=()
 usage() {
   cat <<'EOF'
 Usage:
-  sudo verify-global-proxy [--expected-ip <ip>] [--dns-name <domain>] [--udp-host <ip>] [--udp-port <port>] [--strict-udp|--no-strict-udp] [--no-fail]
+  sudo verify-global-proxy [--expected-ip <ip>] [--dns-name <domain>] [--udp-host <ip>] [--udp-port <port>] [--strict-udp|--no-strict-udp]
 
 This is a strict transparent proxy verifier:
 - it prints every PASS/FAIL it can check
 - it exits 1 at the end if any required check failed
-- --no-fail keeps the exit code 0 for interactive debugging
 EOF
 }
 
@@ -40,7 +38,6 @@ while [[ $# -gt 0 ]]; do
     --udp-port) udp_port="${2:-}"; shift 2 ;;
     --strict-udp) strict_udp="yes"; shift ;;
     --no-strict-udp) strict_udp="no"; shift ;;
-    --no-fail) fail_on_error=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -99,9 +96,7 @@ finish() {
     echo
     echo "Failures:"
     printf '  - %s\n' "${failures[@]}"
-    if [[ "$fail_on_error" -eq 1 ]]; then
-      exit 1
-    fi
+    exit 1
   fi
 
   exit 0
@@ -293,7 +288,7 @@ egress_ip_ifconfig="$(curl_ip https://ifconfig.me/ip 2>/tmp/verify-ifconfig.err 
   && record_pass "ifconfig.me egress IP matches expected IP $expected_ip" \
   || record_fail "ifconfig.me mismatch: expected $expected_ip, got ${egress_ip_ifconfig:-empty}; $(cat /tmp/verify-ifconfig.err 2>/dev/null || true)"
 
-trace_ip="$(curl_ip https://cloudflare.com/cdn-cgi/trace 2>/tmp/verify-cloudflare.err | awk -F= '$1 == "ip" {print $2}' || true)"
+trace_ip="$(curl -4 -fsS --connect-timeout 5 --max-time 15 --retry 2 --retry-delay 1 https://cloudflare.com/cdn-cgi/trace 2>/tmp/verify-cloudflare.err | awk -F= '$1 == "ip" {print $2}' | tr -d '\r\n' || true)"
 [[ "$trace_ip" == "$expected_ip" ]] \
   && record_pass "cloudflare trace IP matches expected IP $expected_ip" \
   || record_fail "cloudflare trace mismatch: expected $expected_ip, got ${trace_ip:-empty}; $(cat /tmp/verify-cloudflare.err 2>/dev/null || true)"
@@ -311,7 +306,7 @@ fi
 
 before_logs="$(mktemp)"
 after_logs="$(mktemp)"
-trap 'rm -f "$before_logs" "$after_logs" /tmp/verify-proxy-preflight.err /tmp/verify-icanhazip.err /tmp/verify-ifconfig.err /tmp/verify-cloudflare.err /tmp/verify-dig.err /tmp/verify-check-dns.out /tmp/verify-check-dns.err' EXIT
+trap 'rm -f "$before_logs" "$after_logs" /tmp/verify-proxy-preflight.err /tmp/verify-icanhazip.err /tmp/verify-ifconfig.err /tmp/verify-cloudflare.err /tmp/verify-dig.err /tmp/verify-check-dns.out /tmp/verify-check-dns.err /tmp/verify-udp.err' EXIT
 
 journalctl -u sing-box --no-pager -n 120 --output cat > "$before_logs" 2>/dev/null || true
 bash -lc "printf 'verify-global-proxy\n' > /dev/udp/$udp_host/$udp_port" 2>/tmp/verify-udp.err || true
