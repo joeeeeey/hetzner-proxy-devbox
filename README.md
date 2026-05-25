@@ -112,6 +112,7 @@ match, sing-box transparent routing is not enabled.
 On a configured VM:
 
 ```bash
+verify-global-proxy
 verify-transparent-proxy
 check-dns-proxy
 sudo update-transparent-proxy-endpoint \
@@ -130,6 +131,13 @@ does not normally cut off SSH access.
 ## Post-Bootstrap Verification
 
 Run this after bootstrap:
+
+```bash
+verify-global-proxy
+```
+
+`verify-global-proxy` is kept as the compatibility command from the original
+runbook. It points to the same verifier as:
 
 ```bash
 verify-transparent-proxy

@@ -223,6 +223,28 @@
   when: transparent_proxy_enabled | bool
   tags: [devbox, proxy]
 
+- name: Install legacy verify-global-proxy sbin symlink
+  file:
+    src: "{{ proxy_verify_script_path }}"
+    dest: "{{ proxy_verify_legacy_sbin_link_path }}"
+    state: link
+    owner: root
+    group: root
+    force: true
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
+- name: Install legacy verify-global-proxy user symlink
+  file:
+    src: "{{ proxy_verify_script_path }}"
+    dest: "{{ proxy_verify_legacy_user_link_path }}"
+    state: link
+    owner: root
+    group: root
+    force: true
+  when: transparent_proxy_enabled | bool
+  tags: [devbox, proxy]
+
 - name: Install user-visible check-dns-proxy symlink
   file:
     src: "{{ proxy_check_dns_script_path }}"

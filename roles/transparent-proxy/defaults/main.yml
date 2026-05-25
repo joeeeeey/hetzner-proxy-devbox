@@ -47,6 +47,8 @@ proxy_common_script_path: /usr/local/sbin/common.sh
 proxy_check_dns_script_path: /usr/local/sbin/check-dns-proxy
 proxy_rollback_script_path: /usr/local/sbin/rollback-transparent-proxy
 proxy_verify_user_link_path: /usr/local/bin/verify-transparent-proxy
+proxy_verify_legacy_sbin_link_path: /usr/local/sbin/verify-global-proxy
+proxy_verify_legacy_user_link_path: /usr/local/bin/verify-global-proxy
 proxy_check_dns_user_link_path: /usr/local/bin/check-dns-proxy
 proxy_verify_service_path: /etc/systemd/system/verify-transparent-proxy.service
 proxy_verify_timer_path: /etc/systemd/system/verify-transparent-proxy.timer
